@@ -1,27 +1,25 @@
-from datetime import datetime
 import json
 import os
+from datetime import datetime
 import pandas as pd
 import requests
 import streamlit as st
 from supabase import Client, create_client
 
 # ----------------------------------------------------
-# 1. CONFIGURACOES & INICIALIZACAO DE MEMORIA
+# 1. CONFIGURAÇÕES & MEMÓRIA
 # ----------------------------------------------------
 st.set_page_config(
     page_title="Tutor Concursos Pro", page_icon="🎯", layout="wide"
 )
 
-chaves_sessao = [
+for k in [
     "questao_atual",
     "status_resposta",
     "escolha",
     "aula_gerada",
     "cargo_memoria",
-]
-
-for k in chaves_sessao:
+]:
   if k not in st.session_state:
     st.session_state[k] = None
 
@@ -83,11 +81,11 @@ def registrar_resposta(q, resposta, acertou, cargo_sel):
   try:
     supabase.table("questoes").insert(linha).execute()
   except Exception as e:
-    st.caption("Aviso de sincronizacao: " + str(e))
+    st.caption("Aviso de sincronização: " + str(e))
 
 
 # ----------------------------------------------------
-# 3. BASE DE CARGOS & QUESTAO DE SEGURANCA
+# 3. BASE DE CARGOS & FALLBACK
 # ----------------------------------------------------
 CARGOS_INFO = {
     "Dataprev - Analista de TI": {
@@ -126,7 +124,7 @@ QUESTAO_FALLBACK = {
     "assunto": "Integração MM e FI",
     "enunciado": (
         "No sistema SAP ECC (Enterprise Core Component), qual módulo principal"
-        " é responsável pela gestão de compras e estoques e se integra ao"
+        " é responsável pela gestão de compras e suprimentos e se integra ao"
         " módulo FI (Financial Accounting) no recebimento de faturas?"
     ),
     "opcoes": {
@@ -139,34 +137,31 @@ QUESTAO_FALLBACK = {
     "gabarito": "B",
     "explicacao_detalhada": (
         "**Alternativa B (Correta):** O módulo **SAP MM (Materials"
-        " Management)** administra o fluxo de compras e estoque. Na entrada da"
-        " fatura, gera os lançamentos no módulo **SAP FI (Financial"
-        " Accounting)**.\n\n- **A (Incorreta):** **SAP SD (Sales and"
-        " Distribution)** cuida de vendas.\n- **C (Incorreta):** **SAP PM"
-        " (Plant Maintenance)** planeja manutenção.\n- **D (Incorreta):** **SAP"
-        " HR (Human Resources)** gerencia pessoas.\n- **E (Incorreta):** **SAP"
-        " QM (Quality Management)** gerencia qualidade."
+        " Management)** administra compras e estoque, integrando-se com o"
+        " módulo **SAP FI (Financial Accounting)**."
     ),
 }
 
 
 # ----------------------------------------------------
-# 4. COMUNICACAO COM A GROQ
+# 4. COMUNICAÇÃO TRANSPARENTE COM A GROQ
 # ----------------------------------------------------
 def chamar_groq(prompt_texto, quer_json=False):
   if not GROQ_KEY:
+    st.error("🔑 Configure a chave GROQ_API_KEY no Secrets do Streamlit!")
     return None
 
   cabecalhos = {
-      "Authorization": "Bearer " + GROQ_KEY,
+      "Authorization": f"Bearer {GROQ_KEY}",
       "Content-Type": "application/json",
   }
   modelos = [
       "llama-3.1-8b-instant",
       "llama3-8b-8192",
       "gemma2-9b-it",
-      "mixtral-8x7b-32768",
   ]
+
+  ultimo_detalhe = ""
 
   for m in modelos:
     corpo = {
@@ -182,13 +177,16 @@ def chamar_groq(prompt_texto, quer_json=False):
           "https://api.groq.com/openai/v1/chat/completions",
           headers=cabecalhos,
           json=corpo,
-          timeout=15,
+          timeout=20,
       )
       if res.status_code == 200:
         return res.json()["choices"][0]["message"]["content"]
-    except Exception:
-      continue
+      else:
+        ultimo_detalhe = f"{m} -> HTTP {res.status_code}: {res.text}"
+    except Exception as e:
+      ultimo_detalhe = f"{m} -> Erro: {e}"
 
+  st.error(f"❌ Resposta da API Groq: {ultimo_detalhe}")
   return None
 
 
@@ -221,42 +219,27 @@ def limpar_json(texto):
 # 5. GERADORES
 # ----------------------------------------------------
 def gerar_questao(cargo_sel, pedido_extra=""):
-  if cargo_sel == "Ciclo Automático (Todos os Cargos)":
-    alvo = "Dataprev - Analista de TI"
-  else:
-    alvo = cargo_sel
-
+  alvo = (
+      "Dataprev - Analista de TI"
+      if cargo_sel == "Ciclo Automático (Todos os Cargos)"
+      else cargo_sel
+  )
   info = CARGOS_INFO.get(alvo, CARGOS_INFO["Dataprev - Analista de TI"])
-  conc = str(info["concurso"])
-  banca = str(info["banca"])
-  mat = str(info["materias"])
   ped = str(pedido_extra).strip()
 
   prompt = (
-      "Atue como Diretor Virtual de Estudos Especialista em Concursos.\n"
-      "Concurso: "
-      + conc
-      + "\nCargo: "
-      + alvo
-      + "\nBanca: "
-      + banca
-      + "\nEmenta: "
-      + mat
-      + "\nPedido: "
-      + ped
-      + "\n\nDIRETRIZES OBRIGATORIAS:\n1. Siglas: escreva o significado por"
-      " extenso entre parenteses.\n2. Gabarito: analise a alternativa certa e"
-      " todas as incorretas.\n\nResponda SOMENTE em JSON:\n{\n  \"concurso\": \""
-      + conc
-      + '",\n  "cargo": "'
-      + alvo
-      + '",\n  "banca": "'
-      + banca
-      + '",\n  "materia": "Nome da Materia",\n  "assunto": "Topico",\n '
-      ' "enunciado": "Texto da questao",\n  "opcoes": {"A": "Opcao A", "B":'
-      ' "Opcao B", "C": "Opcao C", "D": "Opcao D", "E": "Opcao E"},\n '
-      ' "gabarito": "A",\n  "explicacao_detalhada": "Comentario completo com'
-      ' siglas por extenso."\n}'
+      "Atue como Diretor Virtual de Estudos Especialista em Concursos"
+      f" Públicos.\nConcurso: {info['concurso']}\nCargo: {alvo}\nBanca:"
+      f" {info['banca']}\nEmenta: {info['materias']}\nPedido: {ped}\n\nREGRAS"
+      " OBRIGATÓRIAS:\n1. Escreva todas as siglas por extenso entre"
+      " parênteses.\n2. Explique a alternativa certa e cada uma das"
+      ' incorretas.\n\nRetorne no formato JSON:\n{\n  "concurso":'
+      f' "{info["concurso"]}",\n  "cargo": "{alvo}",\n  "banca":'
+      f' "{info["banca"]}",\n  "materia": "Nome da Matéria",\n  "assunto":'
+      ' "Tópico",\n  "enunciado": "Texto da questão",\n  "opcoes": {"A":'
+      ' "Texto A", "B": "Texto B", "C": "Texto C", "D": "Texto D", "E": "Texto'
+      ' E"},\n  "gabarito": "A",\n  "explicacao_detalhada": "Análise completa'
+      ' de todas as alternativas."\n}'
   )
 
   res = chamar_groq(prompt, quer_json=True)
@@ -273,34 +256,23 @@ def gerar_aula(q):
   ops = json.dumps(q.get("opcoes", {}), ensure_ascii=False)
 
   prompt = (
-      "Professor de concursos preparando o candidato para "
-      + c_nome
-      + " na banca "
-      + b_nome
-      + ".\nAssunto: "
-      + m_nome
-      + " - "
-      + a_nome
-      + "\nEnunciado: "
-      + e_nome
-      + "\nOpcoes: "
-      + ops
-      + "\nGabarito: "
-      + g_nome
-      + "\n\nEscreva todas as siglas por extenso entre parenteses.\nEstruture a"
-      " aula em Markdown com 4 topicos:\n## 🏛️ 1. Fundamentacao Teorica"
-      " Completa\n## 🔍 2. Analise de Cada Alternativa\n## ⚡ 3. O Padrao da"
-      " Banca ("
-      + b_nome
-      + ")\n## 🧠 4. Resumo e Regra de Ouro\n"
+      f"Professor de concurso preparando aluno para {c_nome} na banca"
+      f" {b_nome}.\nO aluno marcou 'Não Sei' no assunto: {m_nome} - {a_nome}\n"
+      f"Enunciado: {e_nome}\nAlternativas: {ops}\nGabarito: {g_nome}\n\n"
+      "Escreva todas as siglas por extenso entre parênteses.\n"
+      "Crie uma aula completa em Markdown estruturada com:\n"
+      "## 🏛️ 1. Fundamentação Teórica Completa\n"
+      "## 🔍 2. Análise Detalhada de Cada Alternativa\n"
+      f"## ⚡ 3. O Padrão da Banca ({b_nome}) & Pegadinhas\n"
+      "## 🧠 4. Resumo Prático & Regra de Ouro / Mnemônico"
   )
 
   res = chamar_groq(prompt, quer_json=False)
-  return res if res else "Nao foi possivel gerar a aula agora."
+  return res if res else "Não foi possível carregar a aula detalhada no momento."
 
 
 # ----------------------------------------------------
-# 6. INTERFACE STREAMLIT
+# 6. INTERFACE
 # ----------------------------------------------------
 st.sidebar.title("📚 Menu de Estudos")
 menu = st.sidebar.radio(
@@ -436,9 +408,11 @@ elif menu == "📊 Painel de Desempenho":
 
     st.markdown("---")
     st.subheader("🎯 Desempenho por Concurso e Cargo")
-    tab1, tab2, tab3 = st.tabs(
-        ["🏢 Dataprev (TI)", "🛢️ Transpetro (SAP)", "⚙️ Transpetro (Mecânica)"]
-    )
+    tab1, tab2, tab3 = st.tabs([
+        "🏢 Dataprev (TI)",
+        "🛢️ Transpetro (SAP)",
+        "⚙️ Transpetro (Mecânica)",
+    ])
 
     def mostrar_cargo(cargo_nome, meta=350):
       df_c = df[
