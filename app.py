@@ -3,49 +3,45 @@ import pandas as pd
 import json
 import os
 from datetime import datetime, date, timedelta
-from streamlit_gsheets import GSheetsConnection
+from supabase import create_client, Client
 from google import genai
 from google.genai import types
 
 # ----------------------------------------------------
-# 1. CONFIGURAÇÃO DA API GEMINI
+# 1. CONFIGURAÇÕES (GEMINI + SUPABASE)
 # ----------------------------------------------------
-if "GEMINI_API_KEY" in st.secrets:
-    GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
-else:
-    GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", ""))
+SUPABASE_URL = st.secrets.get("SUPABASE_URL", os.environ.get("SUPABASE_URL", ""))
+SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", os.environ.get("SUPABASE_KEY", ""))
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-# ----------------------------------------------------
-# 2. CONEXÃO COM GOOGLE SHEETS
-# ----------------------------------------------------
-conn = st.connection("gsheets", type=GSheetsConnection)
+@st.cache_resource
+def get_supabase() -> Client:
+    return create_client(SUPABASE_URL, SUPABASE_KEY)
 
+supabase = get_supabase()
+
+# ----------------------------------------------------
+# 2. OPERAÇÕES NO BANCO SUPABASE
+# ----------------------------------------------------
 def carregar_dados():
     try:
-        df = conn.read(ttl=0)
-        if df is None or df.empty:
-            df = pd.DataFrame(columns=[
-                "data", "concurso", "cargo", "banca", 
-                "materia", "enunciado", "gabarito", 
-                "resposta_usuario", "acertou"
-            ])
-        return df
+        response = supabase.table("questoes").select("*").execute()
+        if response.data:
+            return pd.DataFrame(response.data)
+        return pd.DataFrame()
     except Exception:
-        return pd.DataFrame(columns=[
-            "data", "concurso", "cargo", "banca", 
-            "materia", "enunciado", "gabarito", 
-            "resposta_usuario", "acertou"
-        ])
+        return pd.DataFrame()
 
-def salvar_resposta(nova_linha):
-    df_atual = carregar_dados()
-    novo_df = pd.concat([df_atual, pd.DataFrame([nova_linha])], ignore_index=True)
-    conn.update(data=novo_df)
+def salvar_resposta_supabase(nova_linha):
+    try:
+        supabase.table("questoes").insert(nova_linha).execute()
+    except Exception as e:
+        st.error(f"Erro ao salvar no banco Supabase: {e}")
 
 # ----------------------------------------------------
-# 3. MAPEAMENTO DOS CARGOS
+# 3. MAPEAMENTO DOS 3 CARGOS
 # ----------------------------------------------------
 CARGOS_INFO = {
     "Dataprev - Analista de TI": {
@@ -66,11 +62,11 @@ CARGOS_INFO = {
 }
 
 # ----------------------------------------------------
-# 4. GERADOR DE QUESTÕES (COM SUPORTE A PEDIDOS PERSONALIZADOS)
+# 4. GERADOR DE QUESTÕES COM PEDIDO PERSONALIZADO
 # ----------------------------------------------------
 def gerar_questao(cargo_selecionado, pedido_personalizado=""):
     df = carregar_dados()
-    contexto_fraqueza = "Início do ciclo de estudos"
+    contexto_fraqueza = "Início do ciclo adaptativo"
     
     if cargo_selecionado == "Ciclo Automático (Todos os Cargos)":
         if not df.empty and "acertou" in df.columns:
@@ -95,10 +91,9 @@ def gerar_questao(cargo_selecionado, pedido_personalizado=""):
 
     info = CARGOS_INFO[cargo_alvo]
 
-    # Inclusão da instrução sob medida enviada pelo usuário
     instrucao_extra = ""
     if pedido_personalizado and pedido_personalizado.strip() != "":
-        instrucao_extra = f"\n⚠️ PEDIDO DIRETO E PRIORITÁRIO DO ALUNO: '{pedido_personalizado.strip()}'. Cumpra estritamente essa solicitação sobre o tema/dificuldade."
+        instrucao_extra = f"\n⚠️ PEDIDO DIRETO DO ALUNO: '{pedido_personalizado.strip()}'. Cumpra estritamente essa solicitação sobre o tema/dificuldade."
 
     prompt_instrucao = f"""
     Atue como Diretor Virtual de Estudos Especialista em Concursos Públicos.
@@ -109,7 +104,7 @@ def gerar_questao(cargo_selecionado, pedido_personalizado=""):
     Status do Aluno: {contexto_fraqueza}
     {instrucao_extra}
 
-    Gere UMA questão inédita no estilo autêntico e rigoroso da banca correspondente.
+    Gere UMA questão inédita no estilo autêntico da banca examinadora.
     Retorne ESTRITAMENTE em formato JSON com o seguinte schema:
     {{
         "concurso": "{info['concurso']}",
@@ -185,11 +180,11 @@ st.sidebar.markdown("---")
 st.sidebar.subheader("💬 Pedido Especial para a IA")
 pedido_usuario = st.sidebar.text_area(
     "Instrução personalizada (opcional):",
-    placeholder="Ex: Quero uma questão difícil de COBIT 2019 / Foco em ABAP / Pegadinha de Português FGV",
-    help="Se preenchido, a IA vai priorizar o tema que você pedir aqui."
+    placeholder="Ex: Quero questão de COBIT 2019 / Foco em bombas centrífugas / Pegadinha FGV",
+    help="Se preenchido, a IA priorizará sua instrução."
 )
 
-if st.sidebar.button("🔄 Aplicar Pedido / Gerar Nova Questão", use_container_width=True):
+if st.sidebar.button("🔄 Aplicar Pedido / Nova Questão", use_container_width=True):
     st.session_state.questao_atual = None
     st.session_state.status_resposta = None
     st.session_state.escolha = None
@@ -238,7 +233,7 @@ if menu == "📝 Treino de Questões":
                 acertou = 1 if escolha == q["gabarito"] else 0
                 st.session_state.status_resposta = "acertou" if acertou == 1 else "errou"
                 
-                nova_linha = {
+                salvar_resposta_supabase({
                     "data": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     "concurso": q["concurso"],
                     "cargo": q.get("cargo", cargo_selecionado),
@@ -248,8 +243,7 @@ if menu == "📝 Treino de Questões":
                     "gabarito": q["gabarito"],
                     "resposta_usuario": escolha,
                     "acertou": acertou
-                }
-                salvar_resposta(nova_linha)
+                })
                 st.rerun()
 
         with col2:
@@ -257,7 +251,7 @@ if menu == "📝 Treino de Questões":
                 st.session_state.escolha = "NÃO SEI"
                 st.session_state.status_resposta = "nao_sei"
                 
-                nova_linha = {
+                salvar_resposta_supabase({
                     "data": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     "concurso": q["concurso"],
                     "cargo": q.get("cargo", cargo_selecionado),
@@ -267,8 +261,7 @@ if menu == "📝 Treino de Questões":
                     "gabarito": q["gabarito"],
                     "resposta_usuario": "NÃO SEI",
                     "acertou": 0
-                }
-                salvar_resposta(nova_linha)
+                })
                 st.rerun()
 
     if disabled:
@@ -306,7 +299,7 @@ elif menu == "📊 Dashboard Geral & Por Cargo":
     df = carregar_dados()
     
     if df.empty or "acertou" not in df.columns:
-        st.info("Nenhum dado salvo ainda na planilha. Comece resolvendo algumas questões!")
+        st.info("Nenhum dado registrado no Supabase ainda. Resolva algumas questões para sincronizar!")
     else:
         df["data_dt"] = pd.to_datetime(df["data"], errors="coerce")
         hoje_dt = pd.to_datetime(date.today())
