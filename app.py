@@ -1,13 +1,13 @@
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 import json
 import os
-import google.generativeai as genai
 import pandas as pd
+import requests
 import streamlit as st
 from supabase import Client, create_client
 
 # ----------------------------------------------------
-# 1. CONFIGURAÇÕES
+# 1. CONFIGURAÇÕES SEGURAS
 # ----------------------------------------------------
 raw_gemini_key = st.secrets.get(
     "GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", "")
@@ -30,33 +30,8 @@ if not GEMINI_API_KEY:
   st.error("🔑 Configure a chave GEMINI_API_KEY no Secrets do Streamlit!")
   st.stop()
 
-genai.configure(api_key=GEMINI_API_KEY)
 
-
-# Descoberta dinâmica do modelo disponível na sua conta
-@st.cache_resource
-def obter_modelo_ativo():
-  try:
-    modelos_disponiveis = [
-        m.name
-        for m in genai.list_models()
-        if "generateContent" in m.supported_generation_methods
-    ]
-
-    # Prioridade para modelos flash
-    for m in modelos_disponiveis:
-      if "flash" in m:
-        return m
-    for m in modelos_disponiveis:
-      if "gemini" in m:
-        return m
-    if modelos_disponiveis:
-      return modelos_disponiveis[0]
-  except Exception:
-    pass
-  return "models/gemini-1.5-flash"
-
-
+# Inicialização do Supabase
 @st.cache_resource
 def get_supabase():
   if SUPABASE_URL and SUPABASE_KEY:
@@ -71,7 +46,7 @@ supabase = get_supabase()
 
 
 # ----------------------------------------------------
-# 2. BANCO DE DADOS
+# 2. BANCO DE DADOS (SUPABASE)
 # ----------------------------------------------------
 def carregar_dados():
   if not supabase:
@@ -137,8 +112,35 @@ CARGOS_INFO = {
 
 
 # ----------------------------------------------------
-# 4. PROCESSADOR DE TEXTO JSON
+# 4. CHAMADA DIRETA À API GEMINI (SEM BIBLIOTECAS BUGADAS)
 # ----------------------------------------------------
+def chamar_gemini_api(prompt, formato_json=False):
+  modelos = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+  ultimo_erro = ""
+
+  for mod in modelos:
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{mod}:generateContent?key={GEMINI_API_KEY}"
+    headers = {"Content-Type": "application/json"}
+
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+
+    if formato_json:
+      payload["generationConfig"] = {"responseMimeType": "application/json"}
+
+    try:
+      resp = requests.post(url, headers=headers, json=payload, timeout=25)
+      if resp.status_code == 200:
+        data = resp.json()
+        return data["candidates"][0]["content"]["parts"][0]["text"]
+      else:
+        ultimo_erro = f"HTTP {resp.status_code}: {resp.text}"
+    except Exception as e:
+      ultimo_erro = str(e)
+
+  st.error(f"❌ Erro ao conectar com o Gemini: {ultimo_erro}")
+  st.stop()
+
+
 def limpar_json(texto):
   t = texto.strip()
   if t.startswith("```json"):
@@ -155,7 +157,7 @@ def limpar_json(texto):
     i2 = t.rfind("}") + 1
     if i1 != -1 and i2 > i1:
       return json.loads(t[i1:i2])
-    raise ValueError("Resposta fora do formato JSON.")
+    raise ValueError("Resposta da IA fora do padrão JSON.")
 
 
 # ----------------------------------------------------
@@ -207,7 +209,7 @@ def gerar_questao(cargo_selecionado, pedido_extra=""):
     1. Todas as siglas devem vir com o significado por extenso entre parênteses.
     2. O campo 'explicacao_detalhada' deve analisar a alternativa correta e comentar uma a uma todas as incorretas.
 
-    Retorne apenas JSON válido:
+    Retorne apenas JSON válido com esta estrutura:
     {{
       "concurso": "{info['concurso']}",
       "cargo": "{alvo}",
@@ -221,19 +223,8 @@ def gerar_questao(cargo_selecionado, pedido_extra=""):
     }}
     """
 
-  nome_modelo = obter_modelo_ativo()
-  try:
-    mod = genai.GenerativeModel(
-        nome_modelo,
-        generation_config={"response_mime_type": "application/json"},
-    )
-    res = mod.generate_content(prompt)
-    return limpar_json(res.text)
-  except Exception:
-    # Tentativa sem forçar response_mime_type se o modelo for legado
-    mod = genai.GenerativeModel(nome_modelo)
-    res = mod.generate_content(prompt)
-    return limpar_json(res.text)
+  texto_resposta = chamar_gemini_api(prompt, formato_json=True)
+  return limpar_json(texto_resposta)
 
 
 # ----------------------------------------------------
@@ -255,13 +246,7 @@ def gerar_aula(q):
     ## ⚡ 3. Padrão da Banca ({q['banca']}) e Armadilhas
     ## 🧠 4. Resumo Prático e Regra de Ouro
     """
-  try:
-    nome_modelo = obter_modelo_ativo()
-    mod = genai.GenerativeModel(nome_modelo)
-    res = mod.generate_content(prompt)
-    return res.text
-  except Exception as e:
-    return f"Não foi possível carregar a aula agora: {e}"
+  return chamar_gemini_api(prompt, formato_json=False)
 
 
 # ----------------------------------------------------
