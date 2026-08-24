@@ -33,6 +33,30 @@ if not GEMINI_API_KEY:
 genai.configure(api_key=GEMINI_API_KEY)
 
 
+# Descoberta dinâmica do modelo disponível na sua conta
+@st.cache_resource
+def obter_modelo_ativo():
+  try:
+    modelos_disponiveis = [
+        m.name
+        for m in genai.list_models()
+        if "generateContent" in m.supported_generation_methods
+    ]
+
+    # Prioridade para modelos flash
+    for m in modelos_disponiveis:
+      if "flash" in m:
+        return m
+    for m in modelos_disponiveis:
+      if "gemini" in m:
+        return m
+    if modelos_disponiveis:
+      return modelos_disponiveis[0]
+  except Exception:
+    pass
+  return "models/gemini-1.5-flash"
+
+
 @st.cache_resource
 def get_supabase():
   if SUPABASE_URL and SUPABASE_KEY:
@@ -197,16 +221,19 @@ def gerar_questao(cargo_selecionado, pedido_extra=""):
     }}
     """
 
+  nome_modelo = obter_modelo_ativo()
   try:
     mod = genai.GenerativeModel(
-        "gemini-1.5-flash",
+        nome_modelo,
         generation_config={"response_mime_type": "application/json"},
     )
     res = mod.generate_content(prompt)
     return limpar_json(res.text)
-  except Exception as e:
-    st.error(f"Erro ao gerar questão com a IA: {e}")
-    st.stop()
+  except Exception:
+    # Tentativa sem forçar response_mime_type se o modelo for legado
+    mod = genai.GenerativeModel(nome_modelo)
+    res = mod.generate_content(prompt)
+    return limpar_json(res.text)
 
 
 # ----------------------------------------------------
@@ -229,7 +256,8 @@ def gerar_aula(q):
     ## 🧠 4. Resumo Prático e Regra de Ouro
     """
   try:
-    mod = genai.GenerativeModel("gemini-1.5-flash")
+    nome_modelo = obter_modelo_ativo()
+    mod = genai.GenerativeModel(nome_modelo)
     res = mod.generate_content(prompt)
     return res.text
   except Exception as e:
@@ -374,7 +402,6 @@ elif menu == "📊 Painel de Desempenho":
     st.info("Nenhuma questão registrada ainda. Comece a praticar no menu!")
   else:
     df["dt"] = pd.to_datetime(df["data"], errors="coerce")
-    hoje = pd.to_datetime(date.today())
 
     tot = len(df)
     ac = int(df["acertou"].sum())
