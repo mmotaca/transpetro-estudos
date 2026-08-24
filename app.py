@@ -1,8 +1,9 @@
 import streamlit as st
-import sqlite3
+import pandas as pd
 import json
 import os
 from datetime import datetime, date, timedelta
+from streamlit_gsheets import GSheetsConnection
 from google import genai
 from google.genai import types
 
@@ -17,35 +18,35 @@ else:
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 # ----------------------------------------------------
-# 2. BANCO DE DADOS (COM COLUNA CARGO)
+# 2. CONEXÃO COM GOOGLE SHEETS
 # ----------------------------------------------------
-conn = sqlite3.connect("historico_estudos.db", check_same_thread=False)
-cursor = conn.cursor()
+conn = st.connection("gsheets", type=GSheetsConnection)
 
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS questoes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    data TEXT,
-    concurso TEXT,
-    cargo TEXT,
-    banca TEXT,
-    materia TEXT,
-    enunciado TEXT,
-    gabarito TEXT,
-    resposta_usuario TEXT,
-    acertou INTEGER
-)
-""")
+def carregar_dados():
+    try:
+        df = conn.read(ttl=0)
+        # Se a planilha estiver vazia, cria a estrutura base
+        if df is None or df.empty:
+            df = pd.DataFrame(columns=[
+                "data", "concurso", "cargo", "banca", 
+                "materia", "enunciado", "gabarito", 
+                "resposta_usuario", "acertou"
+            ])
+        return df
+    except Exception:
+        return pd.DataFrame(columns=[
+            "data", "concurso", "cargo", "banca", 
+            "materia", "enunciado", "gabarito", 
+            "resposta_usuario", "acertou"
+        ])
 
-# Garante compatibilidade caso a coluna cargo ainda não exista
-try:
-    cursor.execute("ALTER TABLE questoes ADD COLUMN cargo TEXT")
-except:
-    pass
-conn.commit()
+def salvar_resposta(nova_linha):
+    df_atual = carregar_dados()
+    novo_df = pd.concat([df_atual, pd.DataFrame([nova_linha])], ignore_index=True)
+    conn.update(data=novo_df)
 
 # ----------------------------------------------------
-# 3. MAPEAMENTO DOS 3 CARGOS
+# 3. MAPEAMENTO DOS CARGOS
 # ----------------------------------------------------
 CARGOS_INFO = {
     "Dataprev - Analista de TI": {
@@ -69,46 +70,41 @@ CARGOS_INFO = {
 # 4. GERADOR DE QUESTÕES
 # ----------------------------------------------------
 def gerar_questao(cargo_selecionado):
+    df = carregar_dados()
+    contexto_fraqueza = "Início do ciclo de estudos"
+    
     if cargo_selecionado == "Ciclo Automático (Todos os Cargos)":
-        cursor.execute("""
-            SELECT cargo, materia, AVG(CASE WHEN acertou = 1 THEN 1.0 ELSE 0.0 END) as taxa 
-            FROM questoes 
-            WHERE resposta_usuario != 'NÃO SEI' AND cargo IS NOT NULL
-            GROUP BY cargo, materia 
-            ORDER BY taxa ASC 
-            LIMIT 1
-        """)
-        pior = cursor.fetchone()
-        if pior:
-            cargo_alvo = pior[0] if pior[0] in CARGOS_INFO else "Dataprev - Analista de TI"
-            contexto_fraqueza = f"Foco de fraqueza detectado no cargo {cargo_alvo} na matéria {pior[1]}"
+        if not df.empty and "acertou" in df.columns:
+            df_validas = df[df["resposta_usuario"] != "NÃO SEI"]
+            if not df_validas.empty:
+                agrupado = df_validas.groupby(["cargo", "materia"])["acertou"].mean().reset_index()
+                pior = agrupado.sort_values(by="acertou").iloc[0]
+                cargo_alvo = pior["cargo"] if pior["cargo"] in CARGOS_INFO else "Dataprev - Analista de TI"
+                contexto_fraqueza = f"Foco prioritário de erro no cargo {cargo_alvo} na matéria {pior['materia']}"
+            else:
+                cargo_alvo = "Dataprev - Analista de TI"
         else:
             cargo_alvo = "Dataprev - Analista de TI"
-            contexto_fraqueza = "Início do ciclo adaptativo"
     else:
         cargo_alvo = cargo_selecionado
-        cursor.execute("""
-            SELECT materia, AVG(CASE WHEN acertou = 1 THEN 1.0 ELSE 0.0 END) as taxa 
-            FROM questoes 
-            WHERE resposta_usuario != 'NÃO SEI' AND cargo = ?
-            GROUP BY materia 
-            ORDER BY taxa ASC 
-            LIMIT 1
-        """, (cargo_alvo,))
-        pior = cursor.fetchone()
-        contexto_fraqueza = f"Foco de fraqueza no cargo {cargo_alvo}: {pior[0]}" if pior else f"Início de treino para {cargo_alvo}"
+        if not df.empty and "cargo" in df.columns:
+            df_cargo = df[(df["cargo"] == cargo_alvo) & (df["resposta_usuario"] != "NÃO SEI")]
+            if not df_cargo.empty:
+                agrupado = df_cargo.groupby("materia")["acertou"].mean().reset_index()
+                pior = agrupado.sort_values(by="acertou").iloc[0]
+                contexto_fraqueza = f"Foco de erro no cargo {cargo_alvo}: matéria {pior['materia']}"
 
     info = CARGOS_INFO[cargo_alvo]
 
     prompt_instrucao = f"""
-    Atue como Diretor Especialista em Concursos Públicos.
+    Atue como Diretor Virtual de Estudos Especialista em Concursos Públicos.
     Concurso: {info['concurso']}
     Cargo: {cargo_alvo}
     Banca Examinadora: {info['banca']}
     Ementa do Cargo: {info['materias']}
     Status do Aluno: {contexto_fraqueza}
 
-    Gere UMA questão inédita com alto rigor técnico da banca correspondente.
+    Gere UMA questão inédita no estilo rigoroso da banca correspondente.
     Retorne ESTRITAMENTE em formato JSON com o seguinte schema:
     {{
         "concurso": "{info['concurso']}",
@@ -116,10 +112,10 @@ def gerar_questao(cargo_selecionado):
         "banca": "{info['banca']}",
         "materia": "Nome da Matéria",
         "assunto": "Tópico Específico",
-        "enunciado": "Texto da questão claro e objetivo",
+        "enunciado": "Texto claro e direto da questão",
         "opcoes": {{"A": "...", "B": "...", "C": "...", "D": "...", "E": "..."}},
         "gabarito": "A, B, C, D ou E",
-        "explicacao_rapida": "Resumo do porquê o gabarito está certo."
+        "explicacao_rapida": "Resumo objetivo do porquê o gabarito está certo."
     }}
     """
     
@@ -156,7 +152,7 @@ def gerar_aula_profunda(q):
     Como a banca cobra esse assunto e qual a armadilha clássica.
     
     ## 🧠 4. Resumo Prático & Mnemônico / Regra de Ouro
-    Tópicos rápidos ou mnemônico para acertar em 30 segundos na prova.
+    Tópicos rápidos ou mnemônico para memorizar e acertar em 30 segundos na prova.
     """
 
     response = client.models.generate_content(
@@ -186,7 +182,6 @@ cargo_selecionado = st.sidebar.selectbox(
 if menu == "📝 Treino de Questões":
     st.title("🎯 Treino de Questões Adaptativo")
     
-    # Reinicia a questão caso troque de cargo manualmente
     if "cargo_atual_memoria" not in st.session_state or st.session_state.cargo_atual_memoria != cargo_selecionado:
         st.session_state.cargo_atual_memoria = cargo_selecionado
         st.session_state.questao_atual = None
@@ -223,11 +218,18 @@ if menu == "📝 Treino de Questões":
                 acertou = 1 if escolha == q["gabarito"] else 0
                 st.session_state.status_resposta = "acertou" if acertou == 1 else "errou"
                 
-                cursor.execute(
-                    "INSERT INTO questoes (data, concurso, cargo, banca, materia, enunciado, gabarito, resposta_usuario, acertou) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), q["concurso"], q.get("cargo", cargo_selecionado), q["banca"], q["materia"], q["enunciado"], q["gabarito"], escolha, acertou)
-                )
-                conn.commit()
+                nova_linha = {
+                    "data": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "concurso": q["concurso"],
+                    "cargo": q.get("cargo", cargo_selecionado),
+                    "banca": q["banca"],
+                    "materia": q["materia"],
+                    "enunciado": q["enunciado"],
+                    "gabarito": q["gabarito"],
+                    "resposta_usuario": escolha,
+                    "acertou": acertou
+                }
+                salvar_resposta(nova_linha)
                 st.rerun()
 
         with col2:
@@ -235,11 +237,18 @@ if menu == "📝 Treino de Questões":
                 st.session_state.escolha = "NÃO SEI"
                 st.session_state.status_resposta = "nao_sei"
                 
-                cursor.execute(
-                    "INSERT INTO questoes (data, concurso, cargo, banca, materia, enunciado, gabarito, resposta_usuario, acertou) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), q["concurso"], q.get("cargo", cargo_selecionado), q["banca"], q["materia"], q["enunciado"], q["gabarito"], "NÃO SEI", 0)
-                )
-                conn.commit()
+                nova_linha = {
+                    "data": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "concurso": q["concurso"],
+                    "cargo": q.get("cargo", cargo_selecionado),
+                    "banca": q["banca"],
+                    "materia": q["materia"],
+                    "enunciado": q["enunciado"],
+                    "gabarito": q["gabarito"],
+                    "resposta_usuario": "NÃO SEI",
+                    "acertou": 0
+                }
+                salvar_resposta(nova_linha)
                 st.rerun()
 
     if disabled:
@@ -274,98 +283,109 @@ if menu == "📝 Treino de Questões":
 elif menu == "📊 Dashboard Geral & Por Cargo":
     st.title("📊 Painel de Desempenho & Panorama dos 3 Concursos")
     
-    hoje_str = date.today().strftime("%Y-%m-%d")
-    inicio_semana = (date.today() - timedelta(days=7)).strftime("%Y-%m-%d")
-    inicio_mes = (date.today() - timedelta(days=30)).strftime("%Y-%m-%d")
+    df = carregar_dados()
+    
+    if df.empty or "acertou" not in df.columns:
+        st.info("Nenhum dado salvo ainda na planilha. Comece resolvendo algumas questões!")
+    else:
+        df["data_dt"] = pd.to_datetime(df["data"], errors="coerce")
+        hoje_dt = pd.to_datetime(date.today())
+        sete_dias_dt = hoje_dt - timedelta(days=7)
+        trinta_dias_dt = hoje_dt - timedelta(days=30)
 
-    # Volume Geral
-    tot_h = cursor.execute("SELECT COUNT(*) FROM questoes WHERE data >= ?", (hoje_str,)).fetchone()[0]
-    tot_s = cursor.execute("SELECT COUNT(*) FROM questoes WHERE data >= ?", (inicio_semana,)).fetchone()[0]
-    tot_m = cursor.execute("SELECT COUNT(*) FROM questoes WHERE data >= ?", (inicio_mes,)).fetchone()[0]
-    tot_g = cursor.execute("SELECT COUNT(*) FROM questoes").fetchone()[0]
+        # Filtros temporais
+        df_hoje = df[df["data_dt"] >= hoje_dt]
+        df_semana = df[df["data_dt"] >= sete_dias_dt]
+        df_mes = df[df["data_dt"] >= trinta_dias_dt]
 
-    ac_h = cursor.execute("SELECT COUNT(*) FROM questoes WHERE data >= ? AND acertou = 1", (hoje_str,)).fetchone()[0]
-    ac_s = cursor.execute("SELECT COUNT(*) FROM questoes WHERE data >= ? AND acertou = 1", (inicio_semana,)).fetchone()[0]
-    ac_m = cursor.execute("SELECT COUNT(*) FROM questoes WHERE data >= ? AND acertou = 1", (inicio_mes,)).fetchone()[0]
-    ac_g = cursor.execute("SELECT COUNT(*) FROM questoes WHERE acertou = 1").fetchone()[0]
+        tot_h = len(df_hoje)
+        tot_s = len(df_semana)
+        tot_m = len(df_mes)
+        tot_g = len(df)
 
-    st.subheader("📅 Volume Global de Treino")
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Hoje", f"{tot_h} questões", f"{(ac_h/tot_h*100) if tot_h>0 else 0:.1f}% acerto")
-    c2.metric("Últimos 7 Dias", f"{tot_s} questões", f"{(ac_s/tot_s*100) if tot_s>0 else 0:.1f}% acerto")
-    c3.metric("Últimos 30 Dias", f"{tot_m} questões", f"{(ac_m/tot_m*100) if tot_m>0 else 0:.1f}% acerto")
-    c4.metric("Total Geral", f"{tot_g} questões", f"{(ac_g/tot_g*100) if tot_g>0 else 0:.1f}% acerto")
+        ac_h = int(df_hoje["acertou"].sum()) if tot_h > 0 else 0
+        ac_s = int(df_semana["acertou"].sum()) if tot_s > 0 else 0
+        ac_m = int(df_mes["acertou"].sum()) if tot_m > 0 else 0
+        ac_g = int(df["acertou"].sum()) if tot_g > 0 else 0
 
-    st.markdown("---")
-    st.subheader("🎯 Panorama Individual por Concurso / Cargo")
+        st.subheader("📅 Volume Global de Treino")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Hoje", f"{tot_h} questões", f"{(ac_h/tot_h*100) if tot_h>0 else 0:.1f}% acerto")
+        c2.metric("Últimos 7 Dias", f"{tot_s} questões", f"{(ac_s/tot_s*100) if tot_s>0 else 0:.1f}% acerto")
+        c3.metric("Últimos 30 Dias", f"{tot_m} questões", f"{(ac_m/tot_m*100) if tot_m>0 else 0:.1f}% acerto")
+        c4.metric("Total Geral", f"{tot_g} questões", f"{(ac_g/tot_g*100) if tot_g>0 else 0:.1f}% acerto")
 
-    tab_dataprev, tab_sap, tab_mecanico = st.tabs([
-        "🏢 Dataprev (Analista TI)", 
-        "🛢️ Transpetro (Analista SAP)", 
-        "⚙️ Transpetro (Mecânico Manutenção)"
-    ])
+        st.markdown("---")
+        st.subheader("🎯 Panorama Individual por Concurso / Cargo")
 
-    def renderizar_painel_cargo(nome_cargo, meta_questoes=300):
-        tot = cursor.execute("SELECT COUNT(*) FROM questoes WHERE cargo = ? OR concurso = ?", (nome_cargo, nome_cargo.split(' - ')[0])).fetchone()[0]
-        ac = cursor.execute("SELECT COUNT(*) FROM questoes WHERE (cargo = ? OR concurso = ?) AND acertou = 1", (nome_cargo, nome_cargo.split(' - ')[0])).fetchone()[0]
-        duv = cursor.execute("SELECT COUNT(*) FROM questoes WHERE (cargo = ? OR concurso = ?) AND resposta_usuario = 'NÃO SEI'", (nome_cargo, nome_cargo.split(' - ')[0])).fetchone()[0]
+        tab_dataprev, tab_sap, tab_mecanico = st.tabs([
+            "🏢 Dataprev (Analista TI)", 
+            "🛢️ Transpetro (Analista SAP)", 
+            "⚙️ Transpetro (Mecânico Manutenção)"
+        ])
 
-        taxa = (ac / tot * 100) if tot > 0 else 0
-        restantes = max(meta_questoes - tot, 0)
-        progresso = min(tot / meta_questoes, 1.0)
+        def renderizar_painel_cargo_df(nome_cargo, meta_questoes=300):
+            df_c = df[(df["cargo"] == nome_cargo) | (df["concurso"] == nome_cargo.split(" - ")[0])]
+            tot = len(df_c)
+            ac = int(df_c["acertou"].sum()) if tot > 0 else 0
+            duv = len(df_c[df_c["resposta_usuario"] == "NÃO SEI"])
 
-        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-        col_m1.metric("Questões Resolvidas", f"{tot} questões")
-        col_m2.metric("Acertos", f"{ac} questões")
-        col_m3.metric("Aulas Solicitadas", f"{duv}")
-        col_m4.metric("Aproveitamento", f"{taxa:.1f}%")
+            taxa = (ac / tot * 100) if tot > 0 else 0
+            restantes = max(meta_questoes - tot, 0)
+            progresso = min(tot / meta_questoes, 1.0)
 
-        st.write(f"**Termômetro de Prontidão (Meta: {meta_questoes} questões resolvidas):**")
-        st.progress(progresso)
-        
-        c_status1, c_status2 = st.columns(2)
-        with c_status1:
-            st.info(f"📌 **Faltam {restantes} questões** para a base competitiva deste cargo.")
-        with c_status2:
-            if taxa >= 80 and tot >= 150:
-                st.success("🟢 **Status:** Nível Competitivo de Alta Performance!")
-            elif taxa >= 60:
-                st.warning("🟡 **Status:** Nível Intermediário — Em evolução.")
+            col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+            col_m1.metric("Questões Resolvidas", f"{tot} questões")
+            col_m2.metric("Acertos", f"{ac} questões")
+            col_m3.metric("Aulas Solicitadas", f"{duv}")
+            col_m4.metric("Aproveitamento", f"{taxa:.1f}%")
+
+            st.write(f"**Termômetro de Prontidão (Meta: {meta_questoes} questões resolvidas):**")
+            st.progress(progresso)
+            
+            c_status1, c_status2 = st.columns(2)
+            with c_status1:
+                st.info(f"📌 **Faltam {restantes} questões** para a base competitiva deste cargo.")
+            with c_status2:
+                if taxa >= 80 and tot >= 150:
+                    st.success("🟢 **Status:** Nível Competitivo de Alta Performance!")
+                elif taxa >= 60:
+                    st.warning("🟡 **Status:** Nível Intermediário — Em evolução.")
+                else:
+                    st.error("🔴 **Status:** Fase de Construção de Base.")
+
+            st.markdown("#### 📊 Diagnóstico por Matéria:")
+            if tot > 0:
+                stats_mat = df_c.groupby("materia").agg(
+                    total=("acertou", "count"),
+                    acertos=("acertou", "sum"),
+                    duvidas=("resposta_usuario", lambda x: (x == "NÃO SEI").sum())
+                ).reset_index()
+
+                stats_mat["taxa"] = (stats_mat["acertos"] / stats_mat["total"]) * 100
+                stats_mat = stats_mat.sort_values(by="taxa", ascending=True)
+
+                tabela = []
+                for _, row in stats_mat.iterrows():
+                    tx = row["taxa"]
+                    status_txt = "🔴 Prioridade Alta" if tx < 60 else ("🟡 Atenção" if tx < 80 else "🟢 Dominado")
+                    tabela.append({
+                        "Matéria": row["materia"],
+                        "Total de Questões": int(row["total"]),
+                        "Acertos": int(row["acertos"]),
+                        "Aulas Solicitadas": int(row["duvidas"]),
+                        "Aproveitamento": f"{tx:.1f}%",
+                        "Diagnóstico": status_txt
+                    })
+                st.table(tabela)
             else:
-                st.error("🔴 **Status:** Fase de Construção de Base.")
+                st.caption("Nenhuma questão resolvida para este cargo ainda.")
 
-        st.markdown("#### 📊 Diagnóstico por Matéria:")
-        stats_mat = cursor.execute("""
-            SELECT materia, COUNT(*), SUM(CASE WHEN acertou = 1 THEN 1 ELSE 0 END), SUM(CASE WHEN resposta_usuario = 'NÃO SEI' THEN 1 ELSE 0 END)
-            FROM questoes
-            WHERE cargo = ? OR concurso = ?
-            GROUP BY materia
-            ORDER BY (CAST(SUM(CASE WHEN acertou = 1 THEN 1 ELSE 0 END) AS FLOAT) / COUNT(*)) ASC
-        """, (nome_cargo, nome_cargo.split(' - ')[0])).fetchall()
+        with tab_dataprev:
+            renderizar_painel_cargo_df("Dataprev - Analista de TI", meta_questoes=400)
 
-        if stats_mat:
-            tabela = []
-            for mat, t, a, d in stats_mat:
-                acertos_mat = a or 0
-                tx = (acertos_mat / t) * 100
-                status_txt = "🔴 Prioridade Alta" if tx < 60 else ("🟡 Atenção" if tx < 80 else "🟢 Dominado")
-                tabela.append({
-                    "Matéria": mat,
-                    "Total de Questões": t,
-                    "Acertos": acertos_mat,
-                    "Aulas Solicitadas": d,
-                    "Aproveitamento": f"{tx:.1f}%",
-                    "Diagnóstico": status_txt
-                })
-            st.table(tabela)
-        else:
-            st.caption("Nenhuma questão resolvida para este cargo ainda.")
+        with tab_sap:
+            renderizar_painel_cargo_df("Transpetro - Analista SAP", meta_questoes=350)
 
-    with tab_dataprev:
-        renderizar_painel_cargo("Dataprev - Analista de TI", meta_questoes=400)
-
-    with tab_sap:
-        renderizar_painel_cargo("Transpetro - Analista SAP", meta_questoes=350)
-
-    with tab_mecanico:
-        renderizar_painel_cargo("Transpetro - Mecânico de Manutenção", meta_questoes=350)
+        with tab_mecanico:
+            renderizar_painel_cargo_df("Transpetro - Mecânico de Manutenção", meta_questoes=350)
