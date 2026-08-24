@@ -9,7 +9,6 @@ from google.genai import types
 # ----------------------------------------------------
 # 1. CONFIGURAÇÃO SEGURA DA API GEMINI
 # ----------------------------------------------------
-# Busca a chave nos Secrets do Streamlit Cloud ou variável de ambiente
 if "GEMINI_API_KEY" in st.secrets:
     GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
 else:
@@ -39,7 +38,7 @@ CREATE TABLE IF NOT EXISTS questoes (
 conn.commit()
 
 # ----------------------------------------------------
-# 3. GERADOR DE QUESTÕES COM APROFUNDAMENTO DIDÁTICO
+# 3. FUNÇÃO PARA GERAR QUESTÕES
 # ----------------------------------------------------
 def gerar_questao():
     cursor.execute("""
@@ -72,8 +71,7 @@ def gerar_questao():
         "enunciado": "Texto claro e bem estruturado da questão",
         "opcoes": {{"A": "...", "B": "...", "C": "...", "D": "...", "E": "..."}},
         "gabarito": "A, B, C, D ou E",
-        "explicacao_rapida": "Resumo objetivo do porquê o gabarito está certo.",
-        "aula_profunda": "AULA COMPLETA: 1) O Conceito Teórico detalhado do tema; 2) Regra prática para memorizar; 3) A pegadinha clássica que as bancas armam nesse tipo de questão."
+        "explicacao_rapida": "Resumo objetivo do porquê o gabarito está certo."
     }}
     """
     
@@ -87,7 +85,41 @@ def gerar_questao():
     return json.loads(response.text)
 
 # ----------------------------------------------------
-# 4. ESTRUTURA DO APP & MENU LATERAL
+# 4. FUNÇÃO DEDICADA: AULA COMPLETA E APROFUNDADA
+# ----------------------------------------------------
+def gerar_aula_profunda(q):
+    prompt_aula = f"""
+    Você é um professor titular renomado preparando um candidato de elite para a banca {q['banca']} no concurso {q['concurso']}.
+    O aluno marcou 'Não Sei' para o seguinte conteúdo:
+    - Matéria: {q['materia']}
+    - Assunto: {q.get('assunto', '')}
+    - Enunciado da questão: {q['enunciado']}
+    - Alternativas: {json.dumps(q['opcoes'], ensure_ascii=False)}
+    - Gabarito Oficial: {q['gabarito']}
+
+    Escreva uma AULA TEÓRICA E PRÁTICA COMPLETA, profunda, densa e didática em Markdown, dividida exatamente nas seguintes seções:
+
+    ## 🏛️ 1. Fundamentação Teórica Completa
+    Explique o conceito fundamental do zero com rigor técnico, definições formais, leis/regras/normas aplicáveis e contexto prático de TI/Concurso. Não economize na explicação.
+
+    ## 🔍 2. Análise Detalhada Alternativa por Alternativa
+    Explique detalhadamente por que a alternativa correta ({q['gabarito']}) é a certa e destrinche exatamente o erro de cada uma das outras alternativas incorretas.
+
+    ## ⚡ 3. O Padrão da Banca ({q['banca']}) & Pegadinhas
+    Como a banca costuma cobrar esse assunto? Qual é a armadilha típica que faz o candidato médio errar essa questão?
+
+    ## 🧠 4. Resumo Prático & Mnemônico / Regra de Ouro
+    Um esquema visual resumido em tópicos, tabela ou mnemônico para bater o olho na hora da prova e acertar em 30 segundos.
+    """
+
+    response = client.models.generate_content(
+        model="gemini-3.6-flash",
+        contents=prompt_aula
+    )
+    return response.text
+
+# ----------------------------------------------------
+# 5. ESTRUTURA DO APP & MENU LATERAL
 # ----------------------------------------------------
 st.set_page_config(page_title="Tutor Concursos Pro", page_icon="🎯", layout="wide")
 
@@ -105,6 +137,7 @@ if menu == "📝 Treino de Questões":
             st.session_state.questao_atual = gerar_questao()
             st.session_state.status_resposta = None
             st.session_state.escolha = None
+            st.session_state.aula_gerada = None
 
     q = st.session_state.questao_atual
 
@@ -159,9 +192,13 @@ if menu == "📝 Treino de Questões":
             st.error(f"❌ **ERROU!** Você marcou **{st.session_state.escolha}**, mas o gabarito oficial é **{q['gabarito']}**.")
             st.write(q["explicacao_rapida"])
         elif st.session_state.status_resposta == "nao_sei":
-            st.warning(f"💡 **Modo Aula Teórica Ativado!** Gabarito correto: **{q['gabarito']}**.")
-            st.markdown("### 📖 Mini-Aula Completa sobre o Tema:")
-            st.write(q.get("aula_profunda", q["explicacao_rapida"]))
+            st.warning(f"💡 **Modo Aula Teórica Profunda Ativado!** Gabarito oficial: **{q['gabarito']}**.")
+            
+            if st.session_state.aula_gerada is None:
+                with st.spinner("Construindo aula aprofundada com teoria, análise de alternativas e padrão de banca..."):
+                    st.session_state.aula_gerada = gerar_aula_profunda(q)
+            
+            st.markdown(st.session_state.aula_gerada)
 
         st.markdown("---")
         if st.button("Próxima Questão ➡️", type="primary", use_container_width=True):
@@ -169,6 +206,7 @@ if menu == "📝 Treino de Questões":
                 st.session_state.questao_atual = gerar_questao()
                 st.session_state.status_resposta = None
                 st.session_state.escolha = None
+                st.session_state.aula_gerada = None
                 st.rerun()
 
 # ====================================================
@@ -214,7 +252,7 @@ elif menu == "📊 Dashboard Completo":
     # 2. Estimativa de Capacitação para a Prova
     st.subheader("🎯 Termômetro de Prontidão para Aprovação")
     
-    META_COMPETITIVA = 500  # Base média recomendada para consolidação de bancas
+    META_COMPETITIVA = 500
     progresso = min(total_acumulado / META_COMPETITIVA, 1.0)
     restantes = max(META_COMPETITIVA - total_acumulado, 0)
     
