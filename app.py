@@ -62,7 +62,7 @@ CARGOS_INFO = {
 }
 
 # ----------------------------------------------------
-# 4. GERADOR DE QUESTÕES COM PEDIDO PERSONALIZADO
+# 4. GERADOR DE QUESTÕES (COM ANÁLISE COMPLETA E SIGLAS EXPANDIDAS)
 # ----------------------------------------------------
 def gerar_questao(cargo_selecionado, pedido_personalizado=""):
     df = carregar_dados()
@@ -104,6 +104,10 @@ def gerar_questao(cargo_selecionado, pedido_personalizado=""):
     Status do Aluno: {contexto_fraqueza}
     {instrucao_extra}
 
+    DIRETRIZES OBRIGATÓRIAS DE DIDÁTICA:
+    1. SIGLAS: SEMPRE que citar qualquer sigla (ex: SGBD, ITIL, COBIT, ERP, ABAP, END, DDL, DML, ACID), escreva o significado COMPLETO entre parênteses logo em seguida.
+    2. COMENTÁRIO DO GABARITO (campo 'explicacao_detalhada'): Explique com clareza O PORQUÊ da alternativa correta estar certa E DESTRINCHE UMA POR UMA TODAS AS OUTRAS ALTERNATIVAS, mostrando exatamente qual o erro de cada uma.
+
     Gere UMA questão inédita no estilo autêntico da banca examinadora.
     Retorne ESTRITAMENTE em formato JSON com o seguinte schema:
     {{
@@ -115,7 +119,7 @@ def gerar_questao(cargo_selecionado, pedido_personalizado=""):
         "enunciado": "Texto claro e direto da questão",
         "opcoes": {{"A": "...", "B": "...", "C": "...", "D": "...", "E": "..."}},
         "gabarito": "A, B, C, D ou E",
-        "explicacao_rapida": "Resumo objetivo do porquê o gabarito está certo."
+        "explicacao_detalhada": "Texto em Markdown analisando primeiro a correta e depois cada uma das alternativas incorretas (A, B, C, D, E) individualmente, com siglas por extenso entre parênteses."
     }}
     """
     
@@ -129,11 +133,11 @@ def gerar_questao(cargo_selecionado, pedido_personalizado=""):
     return json.loads(response.text)
 
 # ----------------------------------------------------
-# 5. GERADOR DE AULA COMPLETA
+# 5. GERADOR DE AULA COMPLETA (MODO "NÃO SEI")
 # ----------------------------------------------------
 def gerar_aula_profunda(q):
     prompt_aula = f"""
-    Você é um professor titular renomado preparando um candidato para a banca {q['banca']} no cargo {q.get('cargo', q['concurso'])}.
+    Você é um professor titular de alto nível preparando um candidato para a banca {q['banca']} no cargo {q.get('cargo', q['concurso'])}.
     O aluno marcou 'Não Sei' no assunto:
     - Matéria: {q['materia']}
     - Assunto: {q.get('assunto', '')}
@@ -141,18 +145,21 @@ def gerar_aula_profunda(q):
     - Alternativas: {json.dumps(q['opcoes'], ensure_ascii=False)}
     - Gabarito Oficial: {q['gabarito']}
 
+    REGRA CRUCIAL: SEMPRE que usar qualquer sigla técnica, escreva o significado COMPLETO entre parênteses imediatamente ao lado da sigla.
+
     Escreva uma AULA TEÓRICA E PRÁTICA COMPLETA em Markdown com as seguintes seções:
+    
     ## 🏛️ 1. Fundamentação Teórica Completa
-    Explique o conceito fundamental do zero com rigor técnico, fórmulas/normas se aplicável e contexto prático do cargo.
-    
-    ## 🔍 2. Análise Detalhada Alternativa por Alternativa
-    Explique por que a alternativa {q['gabarito']} é a correta e aponte o erro de cada uma das outras alternativas.
-    
+    Explique o conceito fundamental do zero com profundidade, normas/fórmulas aplicáveis e aplicação prática.
+
+    ## 🔍 2. Análise Detalhada de Cada Alternativa
+    Explique por que a alternativa {q['gabarito']} é a correta e analise todas as outras alternativas, apontando o erro específico de cada uma.
+
     ## ⚡ 3. O Padrão da Banca ({q['banca']}) & Pegadinhas
-    Como a banca cobra esse assunto e qual a armadilha clássica.
-    
-    ## 🧠 4. Resumo Prático & Mnemônico / Regra de Ouro
-    Tópicos rápidos ou mnemônico para memorizar e acertar em 30 segundos na prova.
+    Como essa banca aborda o tema e qual armadilha clássica costuma derrubar candidatos.
+
+    ## 🧠 4. Resumo Prático & Regra de Ouro / Mnemônico
+    Esquema resumido em tópicos ou mnemônico para bater o olho na prova e acertar rápido.
     """
 
     response = client.models.generate_content(
@@ -266,12 +273,16 @@ if menu == "📝 Treino de Questões":
 
     if disabled:
         st.markdown("---")
+        explicacao = q.get("explicacao_detalhada", q.get("explicacao_rapida", ""))
+
         if st.session_state.status_resposta == "acertou":
-            st.success(f"🎉 **ACERTOU!** O gabarito oficial é **{q['gabarito']}**.")
-            st.write(q["explicacao_rapida"])
+            st.success(f"🎉 **ACERTOU!** O gabarito oficial é a alternativa **{q['gabarito']}**.")
+            st.markdown("### 📝 Análise Detalhada das Alternativas:")
+            st.markdown(explicacao)
         elif st.session_state.status_resposta == "errou":
-            st.error(f"❌ **ERROU!** Você marcou **{st.session_state.escolha}**, mas o gabarito oficial é **{q['gabarito']}**.")
-            st.write(q["explicacao_rapida"])
+            st.error(f"❌ **ERROU!** Você marcou **{st.session_state.escolha}**, mas o gabarito oficial é a alternativa **{q['gabarito']}**.")
+            st.markdown("### 📝 Análise Detalhada das Alternativas:")
+            st.markdown(explicacao)
         elif st.session_state.status_resposta == "nao_sei":
             st.warning(f"💡 **Modo Aula Teórica Profunda Ativado!** Gabarito oficial: **{q['gabarito']}**.")
             
