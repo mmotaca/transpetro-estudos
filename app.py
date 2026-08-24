@@ -1,6 +1,6 @@
-from datetime import datetime
 import json
 import os
+from datetime import datetime
 import pandas as pd
 import requests
 import streamlit as st
@@ -52,7 +52,7 @@ supabase = get_supabase()
 
 
 # ----------------------------------------------------
-# 2. BANCO DE DADOS
+# 2. BANCO DE DADOS (CORREÇÃO DE REGISTRO)
 # ----------------------------------------------------
 def carregar_dados():
   if not supabase:
@@ -67,11 +67,20 @@ def carregar_dados():
 def registrar_resposta(q, resposta, acertou, cargo_sel):
   if not supabase:
     return
-  cargo_final = q.get("cargo") or cargo_sel
+
+  # Garante que o cargo salvo seja o nome real, nunca "Ciclo Automático"
+  cargo_real = q.get("cargo")
+  if not cargo_real or "Ciclo Automático" in cargo_real:
+    cargo_real = (
+        cargo_sel
+        if cargo_sel != "Ciclo Automático (Todos os Cargos)"
+        else "Dataprev - Analista de TI"
+    )
+
   linha = {
       "data": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
       "concurso": str(q.get("concurso", "")),
-      "cargo": str(cargo_final),
+      "cargo": str(cargo_real),
       "banca": str(q.get("banca", "")),
       "materia": str(q.get("materia", "")),
       "enunciado": str(q.get("enunciado", "")),
@@ -153,13 +162,17 @@ QUESTAO_FALLBACK = {
         "**Alternativa B (Correta):** O módulo **SAP MM (Materials"
         " Management)** administra o fluxo de compras e estoque. Na entrada da"
         " fatura, gera os lançamentos no módulo **SAP FI (Financial"
-        " Accounting)**."
+        " Accounting)**.\n\n- **A (Incorreta):** **SAP SD (Sales and"
+        " Distribution)** gerencia vendas.\n- **C (Incorreta):** **SAP PM"
+        " (Plant Maintenance)** planeja manutenção.\n- **D (Incorreta):** **SAP"
+        " HR (Human Resources)** gerencia pessoal.\n- **E (Incorreta):** **SAP"
+        " QM (Quality Management)** gerencia qualidade."
     ),
 }
 
 
 # ----------------------------------------------------
-# 4. INTELIGÊNCIA DA GROQ COM AUTODESCOBERTA
+# 4. INTELIGÊNCIA DA GROQ (TRAVADA EM PORTUGUÊS)
 # ----------------------------------------------------
 @st.cache_data(ttl=1800)
 def obter_modelos_ativos_groq():
@@ -220,8 +233,9 @@ def chamar_groq(prompt_texto, quer_json=False):
             {
                 "role": "system",
                 "content": (
-                    "Você é um tutor especialista em concursos públicos"
-                    " brasileiros."
+                    "Você é um tutor especialista em concursos públicos no"
+                    " Brasil. Responda EXCLUSIVAMENTE em Português do Brasil"
+                    " (PT-BR). Nunca responda em inglês."
                 ),
             },
             {"role": "user", "content": prompt_texto},
@@ -271,7 +285,7 @@ def limpar_json(texto):
 
 
 # ----------------------------------------------------
-# 5. GERADOR INTELIGENTE COM LOOP ADAPTATIVO
+# 5. GERADOR INTELIGENTE ADAPTATIVO
 # ----------------------------------------------------
 def gerar_questao(cargo_sel, pedido_extra=""):
   if cargo_sel == "Ciclo Automático (Todos os Cargos)":
@@ -281,7 +295,7 @@ def gerar_questao(cargo_sel, pedido_extra=""):
 
   info = CARGOS_INFO.get(alvo, CARGOS_INFO["Dataprev - Analista de TI"])
 
-  # Motor Adaptativo: Varre o histórico para focar na matéria oficial de pior desempenho
+  # Identifica a matéria com menor aproveitamento no banco
   df = carregar_dados()
   materia_foco = None
   if not df.empty and "cargo" in df.columns and "acertou" in df.columns:
@@ -305,8 +319,8 @@ def gerar_questao(cargo_sel, pedido_extra=""):
   ped = str(pedido_extra).strip()
   instrucao_adaptativa = (
       f"⚠️ FOCO INTELIGENTE DE REFORÇO: O aluno precisa treinar a matéria"
-      f" '{materia_foco}' deste edital. Crie uma questão inédita com o padrão"
-      " exato da banca."
+      f" '{materia_foco}' deste edital. Crie uma questão inédita em Português"
+      " com o padrão exato da banca."
   )
   if ped:
     instrucao_adaptativa += f" Instrução extra: {ped}"
@@ -316,15 +330,17 @@ def gerar_questao(cargo_sel, pedido_extra=""):
       f" Públicos.\nConcurso: {info['concurso']}\nCargo: {alvo}\nBanca:"
       f" {info['banca']}\nMatéria OBRIGATÓRIA para a questão:"
       f" {materia_foco}\n{instrucao_adaptativa}\n\nREGRAS OBRIGATÓRIAS:\n1."
-      " Escreva todas as siglas por extenso entre parênteses.\n2. Explique"
-      " detalhadamente a alternativa correta e cada uma das incorretas.\n\nRetorne"
-      ' ESTRITAMENTE em formato JSON:\n{\n  "concurso":'
-      f' "{info["concurso"]}",\n  "cargo": "{alvo}",\n  "banca":'
+      " Escreva todas as siglas por extenso entre parênteses.\n2. No campo"
+      " 'explicacao_detalhada', explique detalhadamente por que a alternativa"
+      " correta está certa e analise cada uma das alternativas incorretas"
+      " individualmente.\n\nRetorne ESTRITAMENTE em formato JSON:\n{\n"
+      f'  "concurso": "{info["concurso"]}",\n  "cargo": "{alvo}",\n  "banca":'
       f' "{info["banca"]}",\n  "materia": "{materia_foco}",\n  "assunto":'
       ' "Tópico Específico",\n  "enunciado": "Texto da questão",\n '
       ' "opcoes": {"A": "Texto A", "B": "Texto B", "C": "Texto C", "D": "Texto'
       ' D", "E": "Texto E"},\n  "gabarito": "A",\n  "explicacao_detalhada":'
-      ' "Análise completa com siglas por extenso entre parênteses."\n}'
+      ' "Análise detalhada da alternativa correta e de cada uma das'
+      ' incorretas com siglas por extenso."\n}'
   )
 
   res = chamar_groq(prompt, quer_json=True)
@@ -344,12 +360,12 @@ def gerar_aula(q):
       f"Professor de concurso preparando aluno para {c_nome} na banca"
       f" {b_nome}.\nO aluno marcou 'Não Sei' no assunto: {m_nome} - {a_nome}\n"
       f"Enunciado: {e_nome}\nAlternativas: {ops}\nGabarito Oficial:"
-      f" {g_nome}\n\nEscreva todas as siglas por extenso entre parênteses.\n"
-      "Crie uma aula completa em Markdown estruturada com:\n"
-      "## 🏛️ 1. Fundamentação Teórica Completa\n"
-      "## 🔍 2. Análise Detalhada de Cada Alternativa\n"
-      f"## ⚡ 3. O Padrão da Banca ({b_nome}) & Pegadinhas\n"
-      "## 🧠 4. Resumo Prático & Regra de Ouro / Mnemônico"
+      f" {g_nome}\n\nEscreva TUDO estritamente em Português do Brasil.\nColoque"
+      " todas as siglas por extenso entre parênteses.\nCrie uma aula"
+      " completa em Markdown estruturada com:\n## 🏛️ 1. Fundamentação Teórica"
+      " Completa\n## 🔍 2. Análise Detalhada de Cada Alternativa\n## ⚡ 3. O"
+      f" Padrão da Banca ({b_nome}) & Pegadinhas\n## 🧠 4. Resumo Prático & Regra"
+      " de Ouro / Mnemônico"
   )
 
   res = chamar_groq(prompt, quer_json=False)
@@ -357,7 +373,7 @@ def gerar_aula(q):
 
 
 # ----------------------------------------------------
-# 6. INTERFACE & DASHBOARD COM RAIO-X DE EDITAL
+# 6. INTERFACE & RAIO-X
 # ----------------------------------------------------
 st.sidebar.title("📚 Menu de Estudos")
 menu = st.sidebar.radio(
@@ -438,111 +454,4 @@ if menu == "📝 Treino de Questões":
       if st.button(
           "🤷 Não sei o assunto (Aula Completa)",
           type="secondary",
-          use_container_width=True,
-      ):
-        st.session_state.escolha = "NÃO SEI"
-        st.session_state.status_resposta = "nao_sei"
-        registrar_resposta(q, "NÃO SEI", 0, cargo_selecionado)
-        st.rerun()
-
-  if travado:
-    st.markdown("---")
-    exp = q.get("explicacao_detalhada", "")
-    gab = str(q.get("gabarito", ""))
-
-    if st.session_state.status_resposta == "acertou":
-      st.success(f"🎉 **Acertou!** Gabarito oficial: **{gab}**.")
-      st.markdown("### 📝 Comentário das Alternativas:")
-      st.markdown(exp)
-    elif st.session_state.status_resposta == "errou":
-      st.error(
-          f"❌ **Errou.** Você marcou **{st.session_state.escolha}**, mas o"
-          f" gabarito oficial é **{gab}**."
-      )
-      st.markdown("### 📝 Comentário das Alternativas:")
-      st.markdown(exp)
-    elif st.session_state.status_resposta == "nao_sei":
-      st.warning(f"💡 **Aula Teórica Completa!** Gabarito oficial: **{gab}**.")
-      if st.session_state.aula_gerada is None:
-        with st.spinner("Construindo aula detalhada..."):
-          st.session_state.aula_gerada = gerar_aula(q)
-      st.markdown(st.session_state.aula_gerada)
-
-    st.markdown("---")
-    if st.button("Próxima Questão ➡️", type="primary", use_container_width=True):
-      st.session_state.questao_atual = None
-      st.session_state.status_resposta = None
-      st.session_state.escolha = None
-      st.session_state.aula_gerada = None
-      st.rerun()
-
-elif menu == "📊 Raio-X & Desempenho por Matéria":
-  st.title("📊 Raio-X Completo do Edital por Matéria")
-  df = carregar_dados()
-
-  tot_geral = len(df)
-  ac_geral = int(df["acertou"].sum()) if not df.empty and "acertou" in df.columns else 0
-  taxa_geral = (ac_geral / tot_geral * 100) if tot_geral > 0 else 0
-
-  c1, c2, c3 = st.columns(3)
-  c1.metric("Questões Respondidas", f"{tot_geral}")
-  c2.metric("Acertos Totais", f"{ac_geral}")
-  c3.metric("Aproveitamento Geral", f"{taxa_geral:.1f}%")
-
-  st.markdown("---")
-  st.subheader("🔍 Desempenho Detalhado por Concurso e Ementa Oficial")
-
-  tab1, tab2, tab3 = st.tabs([
-      "🏢 Dataprev (TI)",
-      "🛢️ Transpetro (SAP)",
-      "⚙️ Transpetro (Mecânica)",
-  ])
-
-  def renderizar_raio_x_completo(cargo_nome):
-    st.markdown(f"### 🎯 Raio-X: {cargo_nome}")
-    materias_oficiais = CARGOS_INFO[cargo_nome]["materias"]
-
-    # Filtra dados do cargo
-    if not df.empty and "cargo" in df.columns:
-      df_c = df[(df["cargo"] == cargo_nome) | (df["concurso"] == cargo_nome.split(" - ")[0])]
-    else:
-      df_c = pd.DataFrame()
-
-    # Monta a tabela cruzando com todas as matérias oficiais do edital
-    tabela_raio_x = []
-    for mat in materias_oficiais:
-      if not df_c.empty and "materia" in df_c.columns:
-        df_mat = df_c[df_c["materia"] == mat]
-        tot_m = len(df_mat)
-        ac_m = int(df_mat["acertou"].sum()) if tot_m > 0 else 0
-        duv_m = len(df_mat[df_mat["resposta_usuario"] == "NÃO SEI"]) if "resposta_usuario" in df_mat.columns else 0
-        tx_m = (ac_m / tot_m * 100) if tot_m > 0 else 0
-      else:
-        tot_m, ac_m, duv_m, tx_m = 0, 0, 0, 0.0
-
-      if tot_m == 0:
-        diagnostico = "⚪ Não Iniciado"
-      elif tx_m < 60:
-        diagnostico = "🔴 Ponto Fraco (Crítico)"
-      elif tx_m < 80:
-        diagnostico = "🟡 Em Evolução"
-      else:
-        diagnostico = "🟢 Domínio Sólido"
-
-      tabela_raio_x.append({
-          "Matéria do Edital": mat,
-          "Questões Feitas": tot_m,
-          "Acertos": ac_m,
-          "Dúvidas / Aulas": duv_m,
-          "Aproveitamento": f"{tx_m:.1f}%" if tot_m > 0 else "-",
-          "Status": diagnostico,
-      })
-
-    st.table(tabela_raio_x)
-
-  with tab1:
-    renderizar_raio_x_completo("Dataprev - Analista de TI")
-  with tab2:
-    renderizar_raio_x_completo("Transpetro - Analista SAP")
-  with tab3:
-    renderizar_raio_x_completo("Transpetro - Mecânico de Manutenção")
+          use_container_width=True
