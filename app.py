@@ -1,211 +1,436 @@
-import streamlit as st
-import pandas as pd
+from datetime import date, datetime, timedelta
 import json
 import os
-from datetime import datetime, date, timedelta
-from supabase import create_client, Client
 import google.generativeai as genai
+import pandas as pd
+import streamlit as st
+from supabase import Client, create_client
 
 # ----------------------------------------------------
-# 1. CONFIGURAÇÕES SEGURAS (GEMINI + SUPABASE)
+# 1. CONFIGURAÇÕES
 # ----------------------------------------------------
-raw_gemini_key = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", ""))
-GEMINI_API_KEY = raw_gemini_key.strip().strip('"').strip("'") if raw_gemini_key else ""
+raw_gemini_key = st.secrets.get(
+    "GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", "")
+)
+GEMINI_API_KEY = (
+    raw_gemini_key.strip().strip('"').strip("'") if raw_gemini_key else ""
+)
 
 raw_supa_url = st.secrets.get("SUPABASE_URL", os.environ.get("SUPABASE_URL", ""))
-SUPABASE_URL = raw_supa_url.strip().strip('"').strip("'") if raw_supa_url else ""
+SUPABASE_URL = (
+    raw_supa_url.strip().strip('"').strip("'") if raw_supa_url else ""
+)
 
 raw_supa_key = st.secrets.get("SUPABASE_KEY", os.environ.get("SUPABASE_KEY", ""))
-SUPABASE_KEY = raw_supa_key.strip().strip('"').strip("'") if raw_supa_key else ""
+SUPABASE_KEY = (
+    raw_supa_key.strip().strip('"').strip("'") if raw_supa_key else ""
+)
 
 if not GEMINI_API_KEY:
-    st.error("🔑 Chave GEMINI_API_KEY não configurada no Secrets do Streamlit!")
-    st.stop()
+  st.error("🔑 Configure a chave GEMINI_API_KEY no Secrets do Streamlit!")
+  st.stop()
 
-# Configuração do cliente Gemini
 genai.configure(api_key=GEMINI_API_KEY)
 
-# Inicialização do Supabase
+
 @st.cache_resource
 def get_supabase():
-    if SUPABASE_URL and SUPABASE_KEY:
-        try:
-            return create_client(SUPABASE_URL, SUPABASE_KEY)
-        except Exception:
-            return None
-    return None
+  if SUPABASE_URL and SUPABASE_KEY:
+    try:
+      return create_client(SUPABASE_URL, SUPABASE_KEY)
+    except Exception:
+      return None
+  return None
+
 
 supabase = get_supabase()
 
+
 # ----------------------------------------------------
-# 2. OPERAÇÕES NO BANCO DE DADOS
+# 2. BANCO DE DADOS
 # ----------------------------------------------------
 def carregar_dados():
-    if not supabase:
-        return pd.DataFrame()
-    try:
-        response = supabase.table("questoes").select("*").execute()
-        if response.data:
-            return pd.DataFrame(response.data)
-        return pd.DataFrame()
-    except Exception:
-        return pd.DataFrame()
+  if not supabase:
+    return pd.DataFrame()
+  try:
+    res = supabase.table("questoes").select("*").execute()
+    return pd.DataFrame(res.data) if res.data else pd.DataFrame()
+  except Exception:
+    return pd.DataFrame()
 
-def salvar_resposta_supabase(nova_linha):
-    if not supabase:
-        return
-    try:
-        supabase.table("questoes").insert(nova_linha).execute()
-    except Exception as e:
-        st.warning(f"Não foi possível salvar no banco: {e}")
+
+def registrar_resposta(q, resposta, acertou, cargo_selecionado):
+  if not supabase:
+    return
+  linha = {
+      "data": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+      "concurso": str(q.get("concurso", "")),
+      "cargo": str(q.get("cargo", cargo_selecionado)),
+      "banca": str(q.get("banca", "")),
+      "materia": str(q.get("materia", "")),
+      "enunciado": str(q.get("enunciado", "")),
+      "gabarito": str(q.get("gabarito", "")),
+      "resposta_usuario": str(resposta),
+      "acertou": int(acertou),
+  }
+  try:
+    supabase.table("questoes").insert(linha).execute()
+  except Exception as e:
+    st.warning(f"Aviso ao gravar histórico: {e}")
+
 
 # ----------------------------------------------------
-# 3. MAPEAMENTO DOS 3 CONCURSOS E CARGOS
+# 3. CARGOS E DISCIPLINAS
 # ----------------------------------------------------
 CARGOS_INFO = {
     "Dataprev - Analista de TI": {
         "concurso": "Dataprev",
         "banca": "FGV",
-        "materias": "Banco de Dados, Governança de TI (COBIT/ITIL), Engenharia de Software, Segurança da Informação, Raciocínio Lógico e Português (FGV)."
+        "materias": (
+            "Banco de Dados, Governança de TI (COBIT/ITIL), Engenharia de"
+            " Software, Segurança da Informação, Raciocínio Lógico e Português."
+        ),
     },
     "Transpetro - Analista SAP": {
         "concurso": "Transpetro",
         "banca": "Cesgranrio",
-        "materias": "Módulos SAP (ECC/S4HANA, MM, PM, FI, CO, ABAP), Integração de Sistemas, Governança de TI, Raciocínio Lógico e Português (Cesgranrio)."
+        "materias": (
+            "Módulos SAP (ECC/S4HANA, MM, PM, FI, CO, ABAP), Integração de"
+            " Sistemas, Governança de TI, Raciocínio Lógico e Português."
+        ),
     },
     "Transpetro - Mecânico de Manutenção": {
         "concurso": "Transpetro",
         "banca": "Cesgranrio",
-        "materias": "Mecânica dos Fluidos, Bombas e Compressores, Manutenção Preditiva/Preventiva, Soldagem, Ensaios Não Destrutivos, Metrologia, Elementos de Máquinas, Desenho Técnico, Raciocínio Lógico e Português."
-    }
+        "materias": (
+            "Mecânica dos Fluidos, Bombas e Compressores, Manutenção"
+            " Preditiva/Preventiva, Soldagem, Ensaios Não Destrutivos,"
+            " Metrologia, Elementos de Máquinas, Desenho Técnico, Raciocínio"
+            " Lógico e Português."
+        ),
+    },
 }
 
+
 # ----------------------------------------------------
-# 4. PARSER E LIMPEZA DE JSON
+# 4. PROCESSADOR DE TEXTO JSON
 # ----------------------------------------------------
-def extrair_json_puro(texto):
-    texto_limpo = texto.strip()
-    if texto_limpo.startswith("```json"):
-        texto_limpo = texto_limpo[7:]
-    elif texto_limpo.startswith("```"):
-        texto_limpo = texto_limpo[3:]
-    if texto_limpo.endswith("```"):
-        texto_limpo = texto_limpo[:-3]
-    texto_limpo = texto_limpo.strip()
-    
-    try:
-        return json.loads(texto_limpo)
-    except Exception:
-        inicio = texto_limpo.find("{")
-        fim = texto_limpo.rfind("}") + 1
-        if inicio != -1 and fim > inicio:
-            return json.loads(texto_limpo[inicio:fim])
-        raise ValueError("JSON retornado inválido.")
+def limpar_json(texto):
+  t = texto.strip()
+  if t.startswith("```json"):
+    t = t[7:]
+  elif t.startswith("```"):
+    t = t[3:]
+  if t.endswith("```"):
+    t = t[:-3]
+  t = t.strip()
+  try:
+    return json.loads(t)
+  except Exception:
+    i1 = t.find("{")
+    i2 = t.rfind("}") + 1
+    if i1 != -1 and i2 > i1:
+      return json.loads(t[i1:i2])
+    raise ValueError("Resposta fora do formato JSON.")
+
 
 # ----------------------------------------------------
 # 5. GERADOR DE QUESTÕES
 # ----------------------------------------------------
-def gerar_questao(cargo_selecionado, pedido_personalizado=""):
-    df = carregar_dados()
-    contexto_fraqueza = "Início do ciclo adaptativo"
-    
-    if cargo_selecionado == "Ciclo Automático (Todos os Cargos)":
-        if not df.empty and "acertou" in df.columns:
-            df_validas = df[df["resposta_usuario"] != "NÃO SEI"]
-            if not df_validas.empty:
-                agrupado = df_validas.groupby(["cargo", "materia"])["acertou"].mean().reset_index()
-                pior = agrupado.sort_values(by="acertou").iloc[0]
-                cargo_alvo = pior["cargo"] if pior["cargo"] in CARGOS_INFO else "Dataprev - Analista de TI"
-                contexto_fraqueza = f"Foco no cargo {cargo_alvo}, matéria {pior['materia']}"
-            else:
-                cargo_alvo = "Dataprev - Analista de TI"
-        else:
-            cargo_alvo = "Dataprev - Analista de TI"
+def gerar_questao(cargo_selecionado, pedido_extra=""):
+  df = carregar_dados()
+  contexto = "Início do ciclo adaptativo"
+
+  if cargo_selecionado == "Ciclo Automático (Todos os Cargos)":
+    if not df.empty and "acertou" in df.columns:
+      df_ok = df[df["resposta_usuario"] != "NÃO SEI"]
+      if not df_ok.empty:
+        agrup = (
+            df_ok.groupby(["cargo", "materia"])["acertou"].mean().reset_index()
+        )
+        pior = agrup.sort_values(by="acertou").iloc[0]
+        alvo = (
+            pior["cargo"]
+            if pior["cargo"] in CARGOS_INFO
+            else "Dataprev - Analista de TI"
+        )
+        contexto = f"Reforçar cargo {alvo} na matéria {pior['materia']}"
+      else:
+        alvo = "Dataprev - Analista de TI"
     else:
-        cargo_alvo = cargo_selecionado
-        if not df.empty and "cargo" in df.columns:
-            df_cargo = df[(df["cargo"] == cargo_alvo) & (df["resposta_usuario"] != "NÃO SEI")]
-            if not df_cargo.empty:
-                agrupado = df_cargo.groupby("materia")["acertou"].mean().reset_index()
-                pior = agrupado.sort_values(by="acertou").iloc[0]
-                contexto_fraqueza = f"Foco no cargo {cargo_alvo}: matéria {pior['materia']}"
+      alvo = "Dataprev - Analista de TI"
+  else:
+    alvo = cargo_selecionado
+    if not df.empty and "cargo" in df.columns:
+      df_c = df[(df["cargo"] == alvo) & (df["resposta_usuario"] != "NÃO SEI")]
+      if not df_c.empty:
+        agrup = df_c.groupby("materia")["acertou"].mean().reset_index()
+        pior = agrup.sort_values(by="acertou").iloc[0]
+        contexto = f"Reforçar matéria {pior['materia']}"
 
-    info = CARGOS_INFO[cargo_alvo]
+  info = CARGOS_INFO[alvo]
+  extra = f"\nPedido do aluno: {pedido_extra}" if pedido_extra.strip() else ""
 
-    instrucao_extra = ""
-    if pedido_personalizado and pedido_personalizado.strip():
-        instrucao_extra = f"\n⚠️ PEDIDO DO ALUNO: '{pedido_personalizado.strip()}'. Cumpra essa prioridade."
+  prompt = f"""
+    Atue como Diretor Virtual de Estudos Especialista em Concursos Públicos.
+    Concurso: {info['concurso']}
+    Cargo: {alvo}
+    Banca: {info['banca']}
+    Ementa: {info['materias']}
+    Diretriz: {contexto} {extra}
 
-    prompt_instrucao = (
-        "Atue como Diretor Virtual de Estudos Especialista em Concursos Públicos.\n"
-        f"Concurso: {info['concurso']}\n"
-        f"Cargo: {cargo_alvo}\n"
-        f"Banca: {info['banca']}\n"
-        f"Ementa: {info['materias']}\n"
-        f"Status: {contexto_fraqueza}\n"
-        f"{instrucao_extra}\n\n"
-        "DIRETRIZES OBRIGATÓRIAS:\n"
-        "1. SIGLAS: SEMPRE que citar qualquer sigla técnica, escreva o significado COMPLETO entre parênteses logo ao lado.\n"
-        "2. COMENTÁRIO DO GABARITO (campo 'explicacao_detalhada'): Explique detalhadamente por que a correta está certa e analise cada uma das alternativas incorretas individualmente, mostrando o erro específico de cada uma.\n\n"
-        "Gere UMA questão inédita no formato JSON:\n"
-        "{\n"
-        f'  "concurso": "{info["concurso"]}",\n'
-        f'  "cargo": "{cargo_alvo}",\n'
-        f'  "banca": "{info["banca"]}",\n'
-        '  "materia": "Nome da Matéria",\n'
-        '  "assunto": "Tópico Específico",\n'
-        '  "enunciado": "Texto claro da questão",\n'
-        '  "opcoes": {"A": "Opção A", "B": "Opção B", "C": "Opção C", "D": "Opção D", "E": "Opção E"},\n'
-        '  "gabarito": "A, B, C, D ou E",\n'
-        '  "explicacao_detalhada": "Análise da alternativa correta e de cada uma das incorretas com siglas por extenso entre parênteses."\n'
-        "}"
+    REGRAS OBRIGATÓRIAS:
+    1. Todas as siglas devem vir com o significado por extenso entre parênteses.
+    2. O campo 'explicacao_detalhada' deve analisar a alternativa correta e comentar uma a uma todas as incorretas.
+
+    Retorne apenas JSON válido:
+    {{
+      "concurso": "{info['concurso']}",
+      "cargo": "{alvo}",
+      "banca": "{info['banca']}",
+      "materia": "Nome da Disciplina",
+      "assunto": "Tópico Específico",
+      "enunciado": "Texto da questão",
+      "opcoes": {{"A": "Opção A", "B": "Opção B", "C": "Opção C", "D": "Opção D", "E": "Opção E"}},
+      "gabarito": "A",
+      "explicacao_detalhada": "Análise detalhada da alternativa correta e de cada alternativa incorreta com siglas por extenso."
+    }}
+    """
+
+  try:
+    mod = genai.GenerativeModel(
+        "gemini-1.5-flash",
+        generation_config={"response_mime_type": "application/json"},
     )
-    
-    try:
-        model = genai.GenerativeModel("gemini-1.5-flash", generation_config={"response_mime_type": "application/json"})
-        response = model.generate_content(prompt_instrucao)
-        return extrair_json_puro(response.text)
-    except Exception as e:
-        st.error(f"Erro na geração da questão: {e}")
-        st.stop()
+    res = mod.generate_content(prompt)
+    return limpar_json(res.text)
+  except Exception as e:
+    st.error(f"Erro ao gerar questão com a IA: {e}")
+    st.stop()
+
 
 # ----------------------------------------------------
 # 6. GERADOR DE AULA COMPLETA
 # ----------------------------------------------------
-def gerar_aula_profunda(q):
-    prompt_aula = (
-        f"Você é um professor renomado preparando um candidato para a banca {q['banca']} no cargo {q.get('cargo', q['concurso'])}.\n"
-        f"O aluno solicitou a aula completa no assunto:\n"
-        f"- Matéria: {q['materia']}\n"
-        f"- Assunto: {q.get('assunto', '')}\n"
-        f"- Enunciado: {q['enunciado']}\n"
-        f"- Alternativas: {json.dumps(q['opcoes'], ensure_ascii=False)}\n"
-        f"- Gabarito: {q['gabarito']}\n\n"
-        "REGRA: SEMPRE que usar qualquer sigla técnica, escreva o significado COMPLETO entre parênteses.\n\n"
-        "Escreva uma AULA COMPLETA em Markdown com:\n"
-        "## 🏛️ 1. Fundamentação Teórica Completa\n"
-        "## 🔍 2. Análise Detalhada de Cada Alternativa\n"
-        f"## ⚡ 3. O Padrão da Banca ({q['banca']}) & Pegadinhas\n"
-        "## 🧠 4. Resumo Prático & Mnemônico / Regra de Ouro\n"
-    )
+def gerar_aula(q):
+  prompt = f"""
+    Professor titular preparando candidato para a banca {q['banca']} no cargo {q.get('cargo', q['concurso'])}.
+    O aluno marcou 'Não Sei' no assunto:
+    Matéria: {q['materia']} | Assunto: {q.get('assunto', '')}
+    Enunciado: {q['enunciado']}
+    Alternativas: {json.dumps(q['opcoes'], ensure_ascii=False)}
+    Gabarito: {q['gabarito']}
 
-    try:
-        model = genai.GenerativeModel("gemini-1.5-flash")
-        response = model.generate_content(prompt_aula)
-        return response.text
-    except Exception as e:
-        return f"Não foi possível carregar a aula detalhada: {e}"
+    Escreva todas as siglas por extenso entre parênteses.
+    Estruture a aula em Markdown com:
+    ## 🏛️ 1. Teoria Completa do Conceito
+    ## 🔍 2. Análise Alternativa por Alternativa
+    ## ⚡ 3. Padrão da Banca ({q['banca']}) e Armadilhas
+    ## 🧠 4. Resumo Prático e Regra de Ouro
+    """
+  try:
+    mod = genai.GenerativeModel("gemini-1.5-flash")
+    res = mod.generate_content(prompt)
+    return res.text
+  except Exception as e:
+    return f"Não foi possível carregar a aula agora: {e}"
+
 
 # ----------------------------------------------------
-# 7. ESTRUTURA PRINCIPAL & NAVEGAÇÃO
+# 7. INTERFACE STREAMLIT
 # ----------------------------------------------------
-st.set_page_config(page_title="Tutor Concursos Pro", page_icon="🎯", layout="wide")
+st.set_page_config(
+    page_title="Tutor Concursos Pro", page_icon="🎯", layout="wide"
+)
 
-st.sidebar.title("📚 Central de Estudos")
-menu = st.sidebar.radio("Navegar:", ["📝 Treino de Questões", "📊 Dashboard Geral & Por Cargo"])
+st.sidebar.title("📚 Menu de Estudos")
+menu = st.sidebar.radio(
+    "Ir para:", ["📝 Treino de Questões", "📊 Painel de Desempenho"]
+)
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("🎯 Foco de Estudo Atual:")
 cargo_selecionado = st.sidebar.selectbox(
-    "Escolha o Cargo:",
-    ["Ciclo Automático (Todos os Cargos)"] + list(CARGOS_
+    "🎯 Foco Atual:",
+    ["Ciclo Automático (Todos os Cargos)"] + list(CARGOS_INFO.keys()),
+)
+
+pedido_usuario = st.sidebar.text_area(
+    "💬 Pedido Específico (Opcional):",
+    placeholder="Ex: Questão de Crase FGV / Bombas Industriais",
+)
+
+if st.sidebar.button("🔄 Gerar Nova Questão", use_container_width=True):
+  st.session_state.questao_atual = None
+  st.session_state.status_resposta = None
+  st.session_state.escolha = None
+  st.session_state.aula_gerada = None
+  st.rerun()
+
+# --- ABA 1: TREINO ---
+if menu == "📝 Treino de Questões":
+  st.title("🎯 Treino de Questões Adaptativo")
+
+  if (
+      "cargo_memoria" not in st.session_state
+      or st.session_state.cargo_memoria != cargo_selecionado
+  ):
+    st.session_state.cargo_memoria = cargo_selecionado
+    st.session_state.questao_atual = None
+
+  if st.session_state.get("questao_atual") is None:
+    with st.spinner("Preparando questão inédita..."):
+      st.session_state.questao_atual = gerar_questao(
+          cargo_selecionado, pedido_usuario
+      )
+      st.session_state.status_resposta = None
+      st.session_state.escolha = None
+      st.session_state.aula_gerada = None
+
+  q = st.session_state.questao_atual
+
+  st.info(
+      f"📌 **Cargo:** {q.get('cargo', q['concurso'])} | **Banca:** {q['banca']}"
+      f" | **Matéria:** {q['materia']} — *{q.get('assunto', '')}*"
+  )
+  st.markdown(f"### {q['enunciado']}")
+
+  travado = st.session_state.status_resposta is not None
+  escolha = st.radio(
+      "Selecione uma resposta:",
+      list(q["opcoes"].keys()),
+      format_func=lambda k: f"{k}) {q['opcoes'][k]}",
+      disabled=travado,
+  )
+
+  col1, col2 = st.columns(2)
+
+  if not travado:
+    with col1:
+      if st.button(
+          "✅ Confirmar Resposta", type="primary", use_container_width=True
+      ):
+        st.session_state.escolha = escolha
+        acertou = 1 if escolha == q["gabarito"] else 0
+        st.session_state.status_resposta = (
+            "acertou" if acertou == 1 else "errou"
+        )
+        registrar_resposta(q, escolha, acertou, cargo_selecionado)
+        st.rerun()
+
+    with col2:
+      if st.button(
+          "🤷 Não sei o assunto (Aula)",
+          type="secondary",
+          use_container_width=True,
+      ):
+        st.session_state.escolha = "NÃO SEI"
+        st.session_state.status_resposta = "nao_sei"
+        registrar_resposta(q, "NÃO SEI", 0, cargo_selecionado)
+        st.rerun()
+
+  if travado:
+    st.markdown("---")
+    exp = q.get("explicacao_detalhada", "")
+
+    if st.session_state.status_resposta == "acertou":
+      st.success(
+          f"🎉 **Parabéns, você acertou!** Gabarito oficial:"
+          f" **{q['gabarito']}**."
+      )
+      st.markdown("### 📝 Comentário das Alternativas:")
+      st.markdown(exp)
+    elif st.session_state.status_resposta == "errou":
+      st.error(
+          f"❌ **Resposta incorreta.** Você marcou"
+          f" **{st.session_state.escolha}**, mas o gabarito oficial é"
+          f" **{q['gabarito']}**."
+      )
+      st.markdown("### 📝 Comentário das Alternativas:")
+      st.markdown(exp)
+    elif st.session_state.status_resposta == "nao_sei":
+      st.warning(
+          f"💡 **Aula Teórica Completa!** Gabarito oficial: **{q['gabarito']}**."
+      )
+      if st.session_state.aula_gerada is None:
+        with st.spinner("Construindo explicação passo a passo..."):
+          st.session_state.aula_gerada = gerar_aula(q)
+      st.markdown(st.session_state.aula_gerada)
+
+    st.markdown("---")
+    if st.button("Próxima Questão ➡️", type="primary", use_container_width=True):
+      st.session_state.questao_atual = None
+      st.session_state.status_resposta = None
+      st.session_state.escolha = None
+      st.session_state.aula_gerada = None
+      st.rerun()
+
+# --- ABA 2: PAINEL ---
+elif menu == "📊 Painel de Desempenho":
+  st.title("📊 Painel de Desempenho dos Concursos")
+
+  df = carregar_dados()
+
+  if df.empty or "acertou" not in df.columns:
+    st.info("Nenhuma questão registrada ainda. Comece a praticar no menu!")
+  else:
+    df["dt"] = pd.to_datetime(df["data"], errors="coerce")
+    hoje = pd.to_datetime(date.today())
+
+    tot = len(df)
+    ac = int(df["acertou"].sum())
+    taxa = (ac / tot * 100) if tot > 0 else 0
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total Resolvido", f"{tot} questões")
+    c2.metric("Total de Acertos", f"{ac} acertos")
+    c3.metric("Aproveitamento Geral", f"{taxa:.1f}%")
+
+    st.markdown("---")
+    st.subheader("🎯 Desempenho por Concurso e Cargo")
+
+    tab1, tab2, tab3 = st.tabs(
+        ["🏢 Dataprev (TI)", "🛢️ Transpetro (SAP)", "⚙️ Transpetro (Mecânica)"]
+    )
+
+    def mostrar_cargo(cargo_nome, meta=350):
+      df_c = df[
+          (df["cargo"] == cargo_nome)
+          | (df["concurso"] == cargo_nome.split(" - ")[0])
+      ]
+      tot_c = len(df_c)
+      ac_c = int(df_c["acertou"].sum()) if tot_c > 0 else 0
+      duv_c = len(df_c[df_c["resposta_usuario"] == "NÃO SEI"])
+      taxa_c = (ac_c / tot_c * 100) if tot_c > 0 else 0
+
+      m1, m2, m3, m4 = st.columns(4)
+      m1.metric("Resolvidas", f"{tot_c}")
+      m2.metric("Acertos", f"{ac_c}")
+      m3.metric("Aulas Abertas", f"{duv_c}")
+      m4.metric("Aproveitamento", f"{taxa_c:.1f}%")
+
+      st.progress(min(tot_c / meta, 1.0))
+      st.caption(f"Meta de questões recomendadas: {tot_c}/{meta}")
+
+      if tot_c > 0:
+        st.markdown("##### 📌 Desempenho por Matéria:")
+        resumo = (
+            df_c.groupby("materia")
+            .agg(
+                total=("acertou", "count"),
+                acertos=("acertou", "sum"),
+            )
+            .reset_index()
+        )
+        resumo["taxa"] = (resumo["acertos"] / resumo["total"]) * 100
+        resumo["Aproveitamento"] = resumo["taxa"].map(lambda x: f"{x:.1f}%")
+        st.dataframe(
+            resumo[["materia", "total", "acertos", "Aproveitamento"]],
+            use_container_width=True,
+        )
+
+    with tab1:
+      mostrar_cargo("Dataprev - Analista de TI", 400)
+    with tab2:
+      mostrar_cargo("Transpetro - Analista SAP", 350)
+    with tab3:
+      mostrar_cargo("Transpetro - Mecânico de Manutenção", 350)
