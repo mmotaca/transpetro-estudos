@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import json
+import re
 import os
 from datetime import datetime, date, timedelta
 from supabase import create_client, Client
@@ -8,29 +9,42 @@ from google import genai
 from google.genai import types
 
 # ----------------------------------------------------
-# 1. CONFIGURAÇÕES (GEMINI + SUPABASE)
+# 1. CONFIGURAÇÕES SEGURAS (GEMINI + SUPABASE)
 # ----------------------------------------------------
-GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", ""))
-SUPABASE_URL = st.secrets.get("SUPABASE_URL", os.environ.get("SUPABASE_URL", ""))
-SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", os.environ.get("SUPABASE_KEY", ""))
+raw_gemini_key = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", ""))
+GEMINI_API_KEY = raw_gemini_key.strip().strip('"').strip("'") if raw_gemini_key else ""
+
+raw_supa_url = st.secrets.get("SUPABASE_URL", os.environ.get("SUPABASE_URL", ""))
+SUPABASE_URL = raw_supa_url.strip().strip('"').strip("'") if raw_supa_url else ""
+
+raw_supa_key = st.secrets.get("SUPABASE_KEY", os.environ.get("SUPABASE_KEY", ""))
+SUPABASE_KEY = raw_supa_key.strip().strip('"').strip("'") if raw_supa_key else ""
 
 if not GEMINI_API_KEY:
-    st.error("⚠️ Atenção: A chave GEMINI_API_KEY não foi encontrada no Secrets do Streamlit!")
+    st.error("🔑 **Atenção:** Chave `GEMINI_API_KEY` não encontrada nas configurações de Secrets do Streamlit.")
     st.stop()
 
+# Inicialização do Cliente Gemini
 client = genai.Client(api_key=GEMINI_API_KEY)
-MODELO_GEMINI = "gemini-2.0-flash"
 
+# Inicialização do Supabase
 @st.cache_resource
-def get_supabase() -> Client:
-    return create_client(SUPABASE_URL, SUPABASE_KEY)
+def get_supabase():
+    if SUPABASE_URL and SUPABASE_KEY:
+        try:
+            return create_client(SUPABASE_URL, SUPABASE_KEY)
+        except Exception:
+            return None
+    return None
 
 supabase = get_supabase()
 
 # ----------------------------------------------------
-# 2. OPERAÇÕES NO BANCO SUPABASE
+# 2. BANCO DE DADOS (SUPABASE COM PROTEÇÃO LOCAL)
 # ----------------------------------------------------
 def carregar_dados():
+    if not supabase:
+        return pd.DataFrame()
     try:
         response = supabase.table("questoes").select("*").execute()
         if response.data:
@@ -40,10 +54,12 @@ def carregar_dados():
         return pd.DataFrame()
 
 def salvar_resposta_supabase(nova_linha):
+    if not supabase:
+        return
     try:
         supabase.table("questoes").insert(nova_linha).execute()
     except Exception as e:
-        st.error(f"Erro ao salvar no banco Supabase: {e}")
+        st.warning(f"Não foi possível gravar no banco em nuvem: {e}")
 
 # ----------------------------------------------------
 # 3. MAPEAMENTO DOS 3 CARGOS
@@ -67,7 +83,21 @@ CARGOS_INFO = {
 }
 
 # ----------------------------------------------------
-# 4. GERADOR DE QUESTÕES
+# 4. TRATAMENTO E PARSER DE JSON
+# ----------------------------------------------------
+def extrair_json_puro(texto):
+    texto_limpo = re.sub(r"^```json\s*|\s*```$", "", texto.strip(), flags=re.MULTILINE)
+    try:
+        return json.loads(texto_limpo)
+    except Exception:
+        inicio = texto_limpo.find("{")
+        fim = texto_limpo.rfind("}") + 1
+        if inicio != -1 and fim != 0:
+            return json.loads(texto_limpo[inicio:fim])
+        raise ValueError("Estrutura JSON inválida recebida da IA.")
+
+# ----------------------------------------------------
+# 5. GERADOR DE QUESTÕES COM FALLBACK RESILIENTE
 # ----------------------------------------------------
 def gerar_questao(cargo_selecionado, pedido_personalizado=""):
     df = carregar_dados()
@@ -80,7 +110,7 @@ def gerar_questao(cargo_selecionado, pedido_personalizado=""):
                 agrupado = df_validas.groupby(["cargo", "materia"])["acertou"].mean().reset_index()
                 pior = agrupado.sort_values(by="acertou").iloc[0]
                 cargo_alvo = pior["cargo"] if pior["cargo"] in CARGOS_INFO else "Dataprev - Analista de TI"
-                contexto_fraqueza = f"Foco prioritário de erro no cargo {cargo_alvo} na matéria {pior['materia']}"
+                contexto_fraqueza = f"Foco de erro no cargo {cargo_alvo} na matéria {pior['materia']}"
             else:
                 cargo_alvo = "Dataprev - Analista de TI"
         else:
@@ -98,7 +128,7 @@ def gerar_questao(cargo_selecionado, pedido_personalizado=""):
 
     instrucao_extra = ""
     if pedido_personalizado and pedido_personalizado.strip() != "":
-        instrucao_extra = f"\n⚠️ PEDIDO DIRETO DO ALUNO: '{pedido_personalizado.strip()}'. Cumpra estritamente essa solicitação sobre o tema/dificuldade."
+        instrucao_extra = f"\n⚠️ PEDIDO PRIORITÁRIO DO ALUNO: '{pedido_personalizado.strip()}'. Cumpra estritamente essa solicitação."
 
     prompt_instrucao = f"""
     Atue como Diretor Virtual de Estudos Especialista em Concursos Públicos.
@@ -110,10 +140,10 @@ def gerar_questao(cargo_selecionado, pedido_personalizado=""):
     {instrucao_extra}
 
     DIRETRIZES OBRIGATÓRIAS:
-    1. SIGLAS: SEMPRE que citar qualquer sigla (ex: SGBD, ITIL, COBIT, ERP, ABAP, END, DDL, DML, ACID), escreva o significado COMPLETO entre parênteses logo em seguida.
-    2. COMENTÁRIO DO GABARITO (campo 'explicacao_detalhada'): Explique detalhadamente O MOTIVO do gabarito correto e ANALISE TODAS AS OUTRAS ALTERNATIVAS uma a uma, pontuando o erro de cada uma.
+    1. SIGLAS: SEMPRE que usar qualquer sigla técnica, escreva o significado COMPLETO entre parênteses logo ao lado.
+    2. COMENTÁRIO DO GABARITO (campo 'explicacao_detalhada'): Explique detalhadamente por que a alternativa certa é a correta e analise todas as outras alternativas uma por uma, mostrando o erro de cada uma.
 
-    Gere UMA questão inédita no estilo autêntico da banca examinadora.
+    Gere UMA questão inédita no estilo autêntico da banca correspondente.
     Retorne ESTRITAMENTE em formato JSON com o seguinte schema:
     {{
         "concurso": "{info['concurso']}",
@@ -124,36 +154,37 @@ def gerar_questao(cargo_selecionado, pedido_personalizado=""):
         "enunciado": "Texto claro e direto da questão",
         "opcoes": {{"A": "...", "B": "...", "C": "...", "D": "...", "E": "..."}},
         "gabarito": "A, B, C, D ou E",
-        "explicacao_detalhada": "Texto em Markdown analisando primeiro a alternativa correta e depois cada uma das alternativas incorretas (A, B, C, D, E) individualmente, com siglas por extenso entre parênteses."
+        "explicacao_detalhada": "Texto em Markdown analisando a correta e cada uma das alternativas incorretas com siglas por extenso entre parênteses."
     }}
     """
     
-    try:
-        response = client.models.generate_content(
-            model=MODELO_GEMINI,
-            contents=prompt_instrucao,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json"
+    modelos_para_tentar = ["gemini-2.0-flash", "gemini-1.5-flash"]
+    ultimo_erro = None
+
+    for mod in modelos_para_tentar:
+        try:
+            response = client.models.generate_content(
+                model=mod,
+                contents=prompt_instrucao,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json"
+                )
             )
-        )
-        return json.loads(response.text)
-    except Exception as e:
-        # Fallback de segurança para o modelo 1.5-flash se necessário
-        response = client.models.generate_content(
-            model="gemini-1.5-flash",
-            contents=prompt_instrucao,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json"
-            )
-        )
-        return json.loads(response.text)
+            return extrair_json_puro(response.text)
+        except Exception as err:
+            ultimo_erro = err
+            continue
+
+    st.error(f"❌ Erro de comunicação com o Gemini: {ultimo_erro}")
+    st.info("💡 Se a mensagem indicar 'API key not valid', acesse o Google AI Studio, crie uma chave nova e atualize o Secrets no Streamlit.")
+    st.stop()
 
 # ----------------------------------------------------
-# 5. GERADOR DE AULA COMPLETA (MODO "NÃO SEI")
+# 6. GERADOR DE AULA PROFUNDA (MODO "NÃO SEI")
 # ----------------------------------------------------
 def gerar_aula_profunda(q):
     prompt_aula = f"""
-    Você é um professor titular de alto nível preparando um candidato para a banca {q['banca']} no cargo {q.get('cargo', q['concurso'])}.
+    Você é um professor titular renomado preparando um candidato para a banca {q['banca']} no cargo {q.get('cargo', q['concurso'])}.
     O aluno marcou 'Não Sei' no assunto:
     - Matéria: {q['materia']}
     - Assunto: {q.get('assunto', '')}
@@ -161,38 +192,37 @@ def gerar_aula_profunda(q):
     - Alternativas: {json.dumps(q['opcoes'], ensure_ascii=False)}
     - Gabarito Oficial: {q['gabarito']}
 
-    REGRA CRUCIAL: SEMPRE que usar qualquer sigla técnica, escreva o significado COMPLETO entre parênteses imediatamente ao lado da sigla.
+    REGRA OBRIGATÓRIA: SEMPRE que usar qualquer sigla técnica, escreva o significado COMPLETO entre parênteses.
 
     Escreva uma AULA TEÓRICA E PRÁTICA COMPLETA em Markdown com as seguintes seções:
     
     ## 🏛️ 1. Fundamentação Teórica Completa
-    Explique o conceito fundamental do zero com profundidade, normas/fórmulas aplicáveis e aplicação prática.
+    Explique o conceito fundamental do zero com profundidade, normas e aplicação prática do cargo.
 
     ## 🔍 2. Análise Detalhada de Cada Alternativa
-    Explique por que a alternativa {q['gabarito']} é a correta e analise todas as outras alternativas, apontando o erro específico de cada uma.
+    Explique por que a alternativa {q['gabarito']} é a correta e analise todas as outras alternativas, apontando o erro de cada uma.
 
     ## ⚡ 3. O Padrão da Banca ({q['banca']}) & Pegadinhas
-    Como essa banca aborda o tema e qual armadilha clássica costuma derrubar candidatos.
+    Como essa banca cobra o tema e a armadilha típica.
 
-    ## 🧠 4. Resumo Prático & Regra de Ouro / Mnemônico
-    Esquema resumido em tópicos ou mnemônico para memorizar e acertar rápido na prova.
+    ## 🧠 4. Resumo Prático & Mnemônico / Regra de Ouro
+    Esquema resumido para acertar rápido na hora da prova.
     """
 
-    try:
-        response = client.models.generate_content(
-            model=MODELO_GEMINI,
-            contents=prompt_aula
-        )
-        return response.text
-    except Exception:
-        response = client.models.generate_content(
-            model="gemini-1.5-flash",
-            contents=prompt_aula
-        )
-        return response.text
+    modelos_para_tentar = ["gemini-2.0-flash", "gemini-1.5-flash"]
+    for mod in modelos_para_tentar:
+        try:
+            response = client.models.generate_content(
+                model=mod,
+                contents=prompt_aula
+            )
+            return response.text
+        except Exception:
+            continue
+    return "Não foi possível carregar a aula no momento. Tente novamente."
 
 # ----------------------------------------------------
-# 6. ESTRUTURA DO APP & NAVEGAÇÃO
+# 7. ESTRUTURA DO APP & NAVEGAÇÃO
 # ----------------------------------------------------
 st.set_page_config(page_title="Tutor Concursos Pro", page_icon="🎯", layout="wide")
 
@@ -210,7 +240,7 @@ st.sidebar.markdown("---")
 st.sidebar.subheader("💬 Pedido Especial para a IA")
 pedido_usuario = st.sidebar.text_area(
     "Instrução personalizada (opcional):",
-    placeholder="Ex: Quero questão de COBIT 2019 / Foco em bombas centrífugas / Pegadinha FGV",
+    placeholder="Ex: Questão difícil de COBIT 2019 / Bombas centrífugas / Crase FGV",
     help="Se preenchido, a IA priorizará sua instrução."
 )
 
@@ -299,18 +329,18 @@ if menu == "📝 Treino de Questões":
         explicacao = q.get("explicacao_detalhada", q.get("explicacao_rapida", ""))
 
         if st.session_state.status_resposta == "acertou":
-            st.success(f"🎉 **ACERTOU!** O gabarito oficial é a alternativa **{q['gabarito']}**.")
+            st.success(f"🎉 **ACERTOU!** Gabarito oficial: **{q['gabarito']}**.")
             st.markdown("### 📝 Análise Detalhada das Alternativas:")
             st.markdown(explicacao)
         elif st.session_state.status_resposta == "errou":
-            st.error(f"❌ **ERROU!** Você marcou **{st.session_state.escolha}**, mas o gabarito oficial é a alternativa **{q['gabarito']}**.")
+            st.error(f"❌ **ERROU!** Você marcou **{st.session_state.escolha}**, mas o gabarito oficial é **{q['gabarito']}**.")
             st.markdown("### 📝 Análise Detalhada das Alternativas:")
             st.markdown(explicacao)
         elif st.session_state.status_resposta == "nao_sei":
             st.warning(f"💡 **Modo Aula Teórica Profunda Ativado!** Gabarito oficial: **{q['gabarito']}**.")
             
             if st.session_state.aula_gerada is None:
-                with st.spinner("Construindo aula completa com fundamentação teórica e padrão de banca..."):
+                with st.spinner("Construindo aula completa com teoria e padrão de banca..."):
                     st.session_state.aula_gerada = gerar_aula_profunda(q)
             
             st.markdown(st.session_state.aula_gerada)
@@ -328,12 +358,12 @@ if menu == "📝 Treino de Questões":
 # TELA 2: DASHBOARD GERAL E POR CARGO
 # ====================================================
 elif menu == "📊 Dashboard Geral & Por Cargo":
-    st.title("📊 Painel de Desempenho & Panorama dos 3 Concursos")
+    st.title("📊 Painel de Desempenho & Panorama dos Concursos")
     
     df = carregar_dados()
     
     if df.empty or "acertou" not in df.columns:
-        st.info("Nenhum dado registrado no Supabase ainda. Resolva algumas questões para sincronizar!")
+        st.info("Nenhum dado registrado no banco ainda. Resolva questões para sincronizar o painel!")
     else:
         df["data_dt"] = pd.to_datetime(df["data"], errors="coerce")
         hoje_dt = pd.to_datetime(date.today())
