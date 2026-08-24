@@ -7,11 +7,22 @@ import streamlit as st
 from supabase import Client, create_client
 
 # ----------------------------------------------------
-# 1. CONFIGURAÇÕES BÁSICAS
+# 1. CONFIGURAÇÕES & INICIALIZAÇÃO SEGURA DO ESTADO
 # ----------------------------------------------------
 st.set_page_config(
     page_title="Tutor Concursos Pro", page_icon="🎯", layout="wide"
 )
+
+# Inicialização à prova de falhas de todas as variáveis da memória
+for chave in [
+    "questao_atual",
+    "status_resposta",
+    "escolha",
+    "aula_gerada",
+    "cargo_memoria",
+]:
+  if chave not in st.session_state:
+    st.session_state[chave] = None
 
 raw_groq = st.secrets.get("GROQ_API_KEY", os.environ.get("GROQ_API_KEY", ""))
 GROQ_API_KEY = raw_groq.strip().strip('"').strip("'") if raw_groq else ""
@@ -37,7 +48,7 @@ supabase = get_supabase()
 
 
 # ----------------------------------------------------
-# 2. BANCO DE DADOS
+# 2. OPERAÇÕES NO BANCO DE DADOS
 # ----------------------------------------------------
 def carregar_dados():
   if not supabase:
@@ -66,11 +77,11 @@ def registrar_resposta(q, resposta, acertou, cargo_selecionado):
   try:
     supabase.table("questoes").insert(linha).execute()
   except Exception as e:
-    st.caption("Aviso de sincronizacao: " + str(e))
+    st.caption("Aviso de sincronização: " + str(e))
 
 
 # ----------------------------------------------------
-# 3. MAPEAMENTO DE CARGOS E QUESTÃO PADRÃO
+# 3. MAPEAMENTO DE CARGOS & QUESTÃO DE RESERVA
 # ----------------------------------------------------
 CARGOS_INFO = {
     "Dataprev - Analista de TI": {
@@ -125,22 +136,23 @@ QUESTAO_FALLBACK = {
         " Management)** administra o fluxo de compras e estoque. Na entrada da"
         " fatura, gera os lançamentos no módulo **SAP FI (Financial"
         " Accounting)**.\n\n- **A (Incorreta):** **SAP SD (Sales and"
-        " Distribution)** cuida de vendas.\n- **C (Incorreta):** **SAP PM"
-        " (Plant Maintenance)** planeja manutenção.\n- **D (Incorreta):** **SAP"
-        " HR (Human Resources)** gerencia pessoas.\n- **E (Incorreta):** **SAP"
-        " QM (Quality Management)** gerencia qualidade."
+        " Distribution)** gerencia vendas e expedição.\n- **C (Incorreta):**"
+        " **SAP PM (Plant Maintenance)** planeja manutenção de equipamentos.\n-"
+        " **D (Incorreta):** **SAP HR (Human Resources)** cuida de folha e"
+        " gestão de pessoas.\n- **E (Incorreta):** **SAP QM (Quality"
+        " Management)** controla testes e qualidade."
     ),
 }
 
 
 # ----------------------------------------------------
-# 4. COMUNICAÇÃO ROBUSTA COM A GROQ
+# 4. REQUISIÇÃO DIRETA COM ROTAÇÃO DE MODELOS GROQ
 # ----------------------------------------------------
 def chamar_groq(prompt_texto, quer_json=False):
   if not GROQ_API_KEY:
     return None
 
-  cabecalhos = {
+  headers = {
       "Authorization": "Bearer " + GROQ_API_KEY,
       "Content-Type": "application/json",
   }
@@ -148,28 +160,29 @@ def chamar_groq(prompt_texto, quer_json=False):
   modelos = [
       "llama-3.1-8b-instant",
       "llama3-8b-8192",
+      "llama-3.3-70b-versatile",
       "llama3-70b-8192",
       "mixtral-8x7b-32768",
   ]
 
   for m in modelos:
-    corpo = {
+    payload = {
         "model": m,
         "messages": [{"role": "user", "content": prompt_texto}],
         "temperature": 0.2,
     }
     if quer_json:
-      corpo["response_format"] = {"type": "json_object"}
+      payload["response_format"] = {"type": "json_object"}
 
     try:
-      resposta = requests.post(
+      resp = requests.post(
           "https://api.groq.com/openai/v1/chat/completions",
-          headers=cabecalhos,
-          json=corpo,
+          headers=headers,
+          json=payload,
           timeout=15,
       )
-      if resposta.status_code == 200:
-        dados = resposta.json()
+      if resp.status_code == 200:
+        dados = resp.json()
         return dados["choices"][0]["message"]["content"]
     except Exception:
       continue
@@ -209,91 +222,80 @@ def gerar_questao(cargo_selecionado, pedido_extra=""):
       else "Dataprev - Analista de TI"
   )
   info = CARGOS_INFO.get(alvo, CARGOS_INFO["Dataprev - Analista de TI"])
+  extra = (
+      ("\nPedido prioritário: " + pedido_extra.strip())
+      if pedido_extra.strip()
+      else ""
+  )
 
-  linhas_prompt = [
+  prompt = (
       "Atue como Diretor Virtual de Estudos Especialista em Concursos"
-      " Públicos.",
-      "Concurso: " + str(info["concurso"]),
-      "Cargo: " + str(alvo),
-      "Banca: " + str(info["banca"]),
-      "Ementa: " + str(info["materias"]),
-      "Pedido Extra do Aluno: " + str(pedido_extra),
-      "",
-      "DIRETRIZES OBRIGATORIAS:",
-      (
-          "1. SIGLAS: SEMPRE escreva o significado COMPLETO por extenso entre"
-          " parenteses ao lado de qualquer sigla tecnica."
-      ),
-      (
-          "2. COMENTARIO DO GABARITO (campo explicacao_detalhada): Explique por"
-          " que a correta esta certa e analise cada uma das alternativas"
-          " incorretas individualmente mostrando o erro de cada uma."
-      ),
-      "",
-      "Retorne APENAS um JSON valido com este formato exato:",
-      "{",
-      '  "concurso": "' + str(info["concurso"]) + '",',
-      '  "cargo": "' + str(alvo) + '",',
-      '  "banca": "' + str(info["banca"]) + '",',
-      '  "materia": "Nome da Materia",',
-      '  "assunto": "Topico Especifico",',
-      '  "enunciado": "Texto claro da questao",',
-      (
-          '  "opcoes": {"A": "Texto A", "B": "Texto B", "C": "Texto C", "D":'
-          ' "Texto D", "E": "Texto E"},'
-      ),
-      '  "gabarito": "A",',
-      (
-          '  "explicacao_detalhada": "Analise da correta e de todas as'
-          ' incorretas com siglas por extenso entre parenteses."'
-      ),
-      "}",
-  ]
+      " Públicos.\nConcurso: "
+      + str(info["concurso"])
+      + "\nCargo: "
+      + str(alvo)
+      + "\nBanca: "
+      + str(info["banca"])
+      + "\nEmenta: "
+      + str(info["materias"])
+      + extra
+      + "\n\nDIRETRIZES OBRIGATÓRIAS:\n1. SIGLAS: SEMPRE escreva o significado"
+      " COMPLETO por extenso entre parênteses ao lado de qualquer sigla"
+      " técnica.\n2. COMENTÁRIO DO GABARITO (campo 'explicacao_detalhada'):"
+      " Explique detalhadamente por que a alternativa correta está certa e"
+      " analise cada uma das alternativas incorretas individualmente, mostrando"
+      " o erro específico de cada uma.\n\nRetorne ESTRITAMENTE em formato"
+      ' JSON:\n{\n  "concurso": "'
+      + str(info["concurso"])
+      + '",\n  "cargo": "'
+      + str(alvo)
+      + '",\n  "banca": "'
+      + str(info["banca"])
+      + '",\n  "materia": "Nome da Matéria",\n  "assunto": "Tópico'
+      ' Específico",\n  "enunciado": "Texto da questão",\n  "opcoes": {"A":'
+      ' "Texto A", "B": "Texto B", "C": "Texto C", "D": "Texto D", "E": "Texto'
+      ' E"},\n  "gabarito": "A",\n  "explicacao_detalhada": "Análise da'
+      " alternativa correta e de cada uma das incorretas com siglas por extenso"
+      ' entre parênteses."\n}'
+  )
 
-  prompt_final = "\n".join(linhas_prompt)
-  resultado = chamar_groq(prompt_final, quer_json=True)
-  return limpar_json(resultado) if resultado else QUESTAO_FALLBACK
+  resposta = chamar_groq(prompt, quer_json=True)
+  return limpar_json(resposta) if resposta else QUESTAO_FALLBACK
 
 
 def gerar_aula(q):
-  linhas_aula = [
-      (
-          "Professor titular preparando candidato para o cargo "
-          + str(q.get("cargo", ""))
-          + " na banca "
-          + str(q.get("banca", ""))
-          + "."
-      ),
-      "O aluno marcou Nao Sei no assunto:",
-      "Materia: " + str(q.get("materia", "")),
-      "Assunto: " + str(q.get("assunto", "")),
-      "Enunciado: " + str(q.get("enunciado", "")),
-      "Alternativas: " + json.dumps(q.get("opcoes", {}), ensure_ascii=False),
-      "Gabarito Oficial: " + str(q.get("gabarito", "")),
-      "",
-      "REGRA: Escreva todas as siglas por extenso entre parenteses.",
-      "",
-      "Estruture a aula completa em Markdown com as secoes:",
-      "## 🏛️ 1. Fundamentacao Teorica Completa",
-      "## 🔍 2. Analise Detalhada de Cada Alternativa",
-      (
-          "## ⚡ 3. O Padrao da Banca ("
-          + str(q.get("banca", ""))
-          + ") & Pegadinhas"
-      ),
-      "## 🧠 4. Resumo Pratico & Regra de Ouro / Mnemonico",
-  ]
-  prompt_aula = "\n".join(linhas_aula)
-  resultado = chamar_groq(prompt_aula, quer_json=False)
+  prompt = (
+      "Professor titular preparando candidato para a banca "
+      + str(q.get("banca", ""))
+      + " no cargo "
+      + str(q.get("cargo", q.get("concurso", "")))
+      + ".\nO aluno marcou 'Não Sei' no assunto:\nMatéria: "
+      + str(q.get("materia", ""))
+      + " | Assunto: "
+      + str(q.get("assunto", ""))
+      + "\nEnunciado: "
+      + str(q.get("enunciado", ""))
+      + "\nAlternativas: "
+      + json.dumps(q.get("opcoes", {}), ensure_ascii=False)
+      + "\nGabarito Oficial: "
+      + str(q.get("gabarito", ""))
+      + "\n\nREGRA: Escreva todas as siglas por extenso entre"
+      " parênteses.\n\nEstruture a aula completa em Markdown com:\n## 🏛️ 1."
+      " Fundamentação Teórica Completa\n## 🔍 2. Análise Detalhada de Cada"
+      " Alternativa\n## ⚡ 3. O Padrão da Banca ("
+      + str(q.get("banca", ""))
+      + ") & Pegadinhas\n## 🧠 4. Resumo Prático & Regra de Ouro / Mnemônico\n"
+  )
+  resposta = chamar_groq(prompt, quer_json=False)
   return (
-      resultado
-      if resultado
-      else "Nao foi possivel carregar a aula detalhada no momento."
+      resposta
+      if resposta
+      else "Não foi possível carregar a aula detalhada no momento."
   )
 
 
 # ----------------------------------------------------
-# 6. INTERFACE VISUAL DO STREAMLIT
+# 6. INTERFACE STREAMLIT
 # ----------------------------------------------------
 st.sidebar.title("📚 Menu de Estudos")
 menu = st.sidebar.radio(
@@ -312,4 +314,173 @@ pedido_usuario = st.sidebar.text_area(
 )
 
 if st.sidebar.button("🔄 Gerar Nova Questão", use_container_width=True):
-  st.session_state.questao_
+  st.session_state.questao_atual = None
+  st.session_state.status_resposta = None
+  st.session_state.escolha = None
+  st.session_state.aula_gerada = None
+  st.rerun()
+
+# --- ABA 1: TREINO DE QUESTÕES ---
+if menu == "📝 Treino de Questões":
+  st.title("🎯 Treino de Questões Adaptativo")
+
+  if not GROQ_API_KEY:
+    st.warning("⚠️ Chave `GROQ_API_KEY` não encontrada no Secrets.")
+
+  if st.session_state.cargo_memoria != cargo_selecionado:
+    st.session_state.cargo_memoria = cargo_selecionado
+    st.session_state.questao_atual = None
+
+  if st.session_state.questao_atual is None:
+    with st.spinner("Carregando questão inédita..."):
+      st.session_state.questao_atual = gerar_questao(
+          cargo_selecionado, pedido_usuario
+      )
+      st.session_state.status_resposta = None
+      st.session_state.escolha = None
+      st.session_state.aula_gerada = None
+
+  q = st.session_state.questao_atual
+
+  st.info(
+      "📌 **Cargo:** "
+      + str(q.get("cargo", q.get("concurso", "")))
+      + " | **Banca:** "
+      + str(q.get("banca", ""))
+      + " | **Matéria:** "
+      + str(q.get("materia", ""))
+      + " — *"
+      + str(q.get("assunto", ""))
+      + "*"
+  )
+  st.markdown("### " + str(q.get("enunciado", "")))
+
+  travado = st.session_state.status_resposta is not None
+  opcoes_dict = q.get("opcoes", {})
+
+  escolha = st.radio(
+      "Selecione uma resposta:",
+      list(opcoes_dict.keys()),
+      format_func=lambda k: str(k) + ") " + str(opcoes_dict[k]),
+      disabled=travado,
+  )
+
+  col1, col2 = st.columns(2)
+
+  if not travado:
+    with col1:
+      if st.button(
+          "✅ Confirmar Resposta", type="primary", use_container_width=True
+      ):
+        st.session_state.escolha = escolha
+        acertou = 1 if escolha == q.get("gabarito") else 0
+        st.session_state.status_resposta = (
+            "acertou" if acertou == 1 else "errou"
+        )
+        registrar_resposta(q, escolha, acertou, cargo_selecionado)
+        st.rerun()
+
+    with col2:
+      if st.button(
+          "🤷 Não sei o assunto (Aula Completa)",
+          type="secondary",
+          use_container_width=True,
+      ):
+        st.session_state.escolha = "NÃO SEI"
+        st.session_state.status_resposta = "nao_sei"
+        registrar_resposta(q, "NÃO SEI", 0, cargo_selecionado)
+        st.rerun()
+
+  if travado:
+    st.markdown("---")
+    exp = q.get("explicacao_detalhada", "")
+
+    if st.session_state.status_resposta == "acertou":
+      st.success(
+          "🎉 **Acertou!** Gabarito oficial: **"
+          + str(q.get("gabarito", ""))
+          + "**."
+      )
+      st.markdown("### 📝 Comentário das Alternativas:")
+      st.markdown(exp)
+    elif st.session_state.status_resposta == "errou":
+      st.error(
+          "❌ **Errou.** Você marcou **"
+          + str(st.session_state.escolha)
+          + "**, mas o gabarito oficial é **"
+          + str(q.get("gabarito", ""))
+          + "**."
+      )
+      st.markdown("### 📝 Comentário das Alternativas:")
+      st.markdown(exp)
+    elif st.session_state.status_resposta == "nao_sei":
+      st.warning(
+          "💡 **Aula Teórica Completa!** Gabarito oficial: **"
+          + str(q.get("gabarito", ""))
+          + "**."
+      )
+      if st.session_state.aula_gerada is None:
+        with st.spinner("Construindo aula detalhada..."):
+          st.session_state.aula_gerada = gerar_aula(q)
+      st.markdown(st.session_state.aula_gerada)
+
+    st.markdown("---")
+    if st.button("Próxima Questão ➡️", type="primary", use_container_width=True):
+      st.session_state.questao_atual = None
+      st.session_state.status_resposta = None
+      st.session_state.escolha = None
+      st.session_state.aula_gerada = None
+      st.rerun()
+
+# --- ABA 2: PAINEL DE DESEMPENHO ---
+elif menu == "📊 Painel de Desempenho":
+  st.title("📊 Painel de Desempenho dos Concursos")
+
+  df = carregar_dados()
+
+  if df.empty or "acertou" not in df.columns:
+    st.info("Nenhuma questão registrada ainda. Comece a praticar no menu!")
+  else:
+    tot = len(df)
+    ac = int(df["acertou"].sum())
+    taxa = (ac / tot * 100) if tot > 0 else 0
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total Resolvido", str(tot) + " questões")
+    c2.metric("Total de Acertos", str(ac) + " acertos")
+    c3.metric("Aproveitamento Geral", f"{taxa:.1f}%")
+
+    st.markdown("---")
+    st.subheader("🎯 Desempenho por Concurso e Cargo")
+
+    tab1, tab2, tab3 = st.tabs([
+        "🏢 Dataprev (TI)",
+        "🛢️ Transpetro (SAP)",
+        "⚙️ Transpetro (Mecânica)",
+    ])
+
+    def mostrar_cargo(cargo_nome, meta=350):
+      df_c = df[
+          (df["cargo"] == cargo_nome)
+          | (df["concurso"] == cargo_nome.split(" - ")[0])
+      ]
+      tot_c = len(df_c)
+      ac_c = int(df_c["acertou"].sum()) if tot_c > 0 else 0
+      duv_c = len(df_c[df_c["resposta_usuario"] == "NÃO SEI"])
+      taxa_c = (ac_c / tot_c * 100) if tot_c > 0 else 0
+
+      m1, m2, m3, m4 = st.columns(4)
+      m1.metric("Resolvidas", str(tot_c))
+      m2.metric("Acertos", str(ac_c))
+      m3.metric("Aulas Abertas", str(duv_c))
+      m4.metric("Aproveitamento", f"{taxa_c:.1f}%")
+
+      st.progress(min(tot_c / meta, 1.0))
+      st.caption(f"Meta de questões: {tot_c}/{meta}")
+
+    with tab1:
+      mostrar_cargo("Dataprev - Analista de TI", 400)
+    with tab2:
+      mostrar_cargo("Transpetro - Analista SAP", 350)
+    with tab3:
+      mostrar_cargo("Transpetro - Mecânico de Manutenção", 350)
