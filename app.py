@@ -25,7 +25,6 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 def carregar_dados():
     try:
         df = conn.read(ttl=0)
-        # Se a planilha estiver vazia, cria a estrutura base
         if df is None or df.empty:
             df = pd.DataFrame(columns=[
                 "data", "concurso", "cargo", "banca", 
@@ -67,9 +66,9 @@ CARGOS_INFO = {
 }
 
 # ----------------------------------------------------
-# 4. GERADOR DE QUESTÕES
+# 4. GERADOR DE QUESTÕES (COM SUPORTE A PEDIDOS PERSONALIZADOS)
 # ----------------------------------------------------
-def gerar_questao(cargo_selecionado):
+def gerar_questao(cargo_selecionado, pedido_personalizado=""):
     df = carregar_dados()
     contexto_fraqueza = "Início do ciclo de estudos"
     
@@ -96,6 +95,11 @@ def gerar_questao(cargo_selecionado):
 
     info = CARGOS_INFO[cargo_alvo]
 
+    # Inclusão da instrução sob medida enviada pelo usuário
+    instrucao_extra = ""
+    if pedido_personalizado and pedido_personalizado.strip() != "":
+        instrucao_extra = f"\n⚠️ PEDIDO DIRETO E PRIORITÁRIO DO ALUNO: '{pedido_personalizado.strip()}'. Cumpra estritamente essa solicitação sobre o tema/dificuldade."
+
     prompt_instrucao = f"""
     Atue como Diretor Virtual de Estudos Especialista em Concursos Públicos.
     Concurso: {info['concurso']}
@@ -103,8 +107,9 @@ def gerar_questao(cargo_selecionado):
     Banca Examinadora: {info['banca']}
     Ementa do Cargo: {info['materias']}
     Status do Aluno: {contexto_fraqueza}
+    {instrucao_extra}
 
-    Gere UMA questão inédita no estilo rigoroso da banca correspondente.
+    Gere UMA questão inédita no estilo autêntico e rigoroso da banca correspondente.
     Retorne ESTRITAMENTE em formato JSON com o seguinte schema:
     {{
         "concurso": "{info['concurso']}",
@@ -176,6 +181,21 @@ cargo_selecionado = st.sidebar.selectbox(
     ["Ciclo Automático (Todos os Cargos)"] + list(CARGOS_INFO.keys())
 )
 
+st.sidebar.markdown("---")
+st.sidebar.subheader("💬 Pedido Especial para a IA")
+pedido_usuario = st.sidebar.text_area(
+    "Instrução personalizada (opcional):",
+    placeholder="Ex: Quero uma questão difícil de COBIT 2019 / Foco em ABAP / Pegadinha de Português FGV",
+    help="Se preenchido, a IA vai priorizar o tema que você pedir aqui."
+)
+
+if st.sidebar.button("🔄 Aplicar Pedido / Gerar Nova Questão", use_container_width=True):
+    st.session_state.questao_atual = None
+    st.session_state.status_resposta = None
+    st.session_state.escolha = None
+    st.session_state.aula_gerada = None
+    st.rerun()
+
 # ====================================================
 # TELA 1: ÁREA DE QUESTÕES
 # ====================================================
@@ -188,7 +208,7 @@ if menu == "📝 Treino de Questões":
 
     if st.session_state.get("questao_atual") is None:
         with st.spinner(f"Gerando questão inédita para: {cargo_selecionado}..."):
-            st.session_state.questao_atual = gerar_questao(cargo_selecionado)
+            st.session_state.questao_atual = gerar_questao(cargo_selecionado, pedido_usuario)
             st.session_state.status_resposta = None
             st.session_state.escolha = None
             st.session_state.aula_gerada = None
@@ -271,7 +291,7 @@ if menu == "📝 Treino de Questões":
         st.markdown("---")
         if st.button("Próxima Questão ➡️", type="primary", use_container_width=True):
             with st.spinner("Buscando próxima questão..."):
-                st.session_state.questao_atual = gerar_questao(cargo_selecionado)
+                st.session_state.questao_atual = gerar_questao(cargo_selecionado, pedido_usuario)
                 st.session_state.status_resposta = None
                 st.session_state.escolha = None
                 st.session_state.aula_gerada = None
@@ -293,7 +313,6 @@ elif menu == "📊 Dashboard Geral & Por Cargo":
         sete_dias_dt = hoje_dt - timedelta(days=7)
         trinta_dias_dt = hoje_dt - timedelta(days=30)
 
-        # Filtros temporais
         df_hoje = df[df["data_dt"] >= hoje_dt]
         df_semana = df[df["data_dt"] >= sete_dias_dt]
         df_mes = df[df["data_dt"] >= trinta_dias_dt]
