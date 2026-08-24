@@ -52,7 +52,7 @@ supabase = get_supabase()
 
 
 # ----------------------------------------------------
-# 2. BANCO DE DADOS (CORREÇÃO DE REGISTRO)
+# 2. BANCO DE DADOS
 # ----------------------------------------------------
 def carregar_dados():
   if not supabase:
@@ -67,8 +67,6 @@ def carregar_dados():
 def registrar_resposta(q, resposta, acertou, cargo_sel):
   if not supabase:
     return
-
-  # Garante que o cargo salvo seja o nome real, nunca "Ciclo Automático"
   cargo_real = q.get("cargo")
   if not cargo_real or "Ciclo Automático" in cargo_real:
     cargo_real = (
@@ -162,11 +160,7 @@ QUESTAO_FALLBACK = {
         "**Alternativa B (Correta):** O módulo **SAP MM (Materials"
         " Management)** administra o fluxo de compras e estoque. Na entrada da"
         " fatura, gera os lançamentos no módulo **SAP FI (Financial"
-        " Accounting)**.\n\n- **A (Incorreta):** **SAP SD (Sales and"
-        " Distribution)** gerencia vendas.\n- **C (Incorreta):** **SAP PM"
-        " (Plant Maintenance)** planeja manutenção.\n- **D (Incorreta):** **SAP"
-        " HR (Human Resources)** gerencia pessoal.\n- **E (Incorreta):** **SAP"
-        " QM (Quality Management)** gerencia qualidade."
+        " Accounting)**."
     ),
 }
 
@@ -235,7 +229,7 @@ def chamar_groq(prompt_texto, quer_json=False):
                 "content": (
                     "Você é um tutor especialista em concursos públicos no"
                     " Brasil. Responda EXCLUSIVAMENTE em Português do Brasil"
-                    " (PT-BR). Nunca responda em inglês."
+                    " (PT-BR)."
                 ),
             },
             {"role": "user", "content": prompt_texto},
@@ -288,14 +282,13 @@ def limpar_json(texto):
 # 5. GERADOR INTELIGENTE ADAPTATIVO
 # ----------------------------------------------------
 def gerar_questao(cargo_sel, pedido_extra=""):
-  if cargo_sel == "Ciclo Automático (Todos os Cargos)":
-    alvo = "Dataprev - Analista de TI"
-  else:
-    alvo = cargo_sel
-
+  alvo = (
+      "Dataprev - Analista de TI"
+      if cargo_sel == "Ciclo Automático (Todos os Cargos)"
+      else cargo_sel
+  )
   info = CARGOS_INFO.get(alvo, CARGOS_INFO["Dataprev - Analista de TI"])
 
-  # Identifica a matéria com menor aproveitamento no banco
   df = carregar_dados()
   materia_foco = None
   if not df.empty and "cargo" in df.columns and "acertou" in df.columns:
@@ -440,18 +433,68 @@ if menu == "📝 Treino de Questões":
   col1, col2 = st.columns(2)
   if not travado:
     with col1:
-      if st.button(
-          "✅ Confirmar Resposta", type="primary", use_container_width=True
-      ):
+      if st.button("✅ Confirmar Resposta", type="primary", use_container_width=True):
         st.session_state.escolha = escolha
         acertou = 1 if escolha == q.get("gabarito") else 0
-        st.session_state.status_resposta = (
-            "acertou" if acertou == 1 else "errou"
-        )
+        st.session_state.status_resposta = "acertou" if acertou == 1 else "errou"
         registrar_resposta(q, escolha, acertou, cargo_selecionado)
         st.rerun()
     with col2:
-      if st.button(
-          "🤷 Não sei o assunto (Aula Completa)",
-          type="secondary",
-          use_container_width=True
+      if st.button("🤷 Não sei o assunto (Aula Completa)", type="secondary", use_container_width=True):
+        st.session_state.escolha = "NÃO SEI"
+        st.session_state.status_resposta = "nao_sei"
+        registrar_resposta(q, "NÃO SEI", 0, cargo_selecionado)
+        st.rerun()
+
+  if travado:
+    st.markdown("---")
+    exp = q.get("explicacao_detalhada", "")
+    gab = str(q.get("gabarito", ""))
+
+    if st.session_state.status_resposta == "acertou":
+      st.success(f"🎉 **Acertou!** Gabarito oficial: **{gab}**.")
+      st.markdown("### 📝 Comentário das Alternativas:")
+      st.markdown(exp if exp else "Explicação detalhada gerada com base no gabarito oficial.")
+    elif st.session_state.status_resposta == "errou":
+      st.error(f"❌ **Errou.** Você marcou **{st.session_state.escolha}**, mas o gabarito oficial é **{gab}**.")
+      st.markdown("### 📝 Comentário das Alternativas:")
+      st.markdown(exp if exp else "Explicação detalhada gerada com base no gabarito oficial.")
+    elif st.session_state.status_resposta == "nao_sei":
+      st.warning(f"💡 **Aula Teórica Completa!** Gabarito oficial: **{gab}**.")
+      if st.session_state.aula_gerada is None:
+        with st.spinner("Construindo aula detalhada em Português..."):
+          st.session_state.aula_gerada = gerar_aula(q)
+      st.markdown(st.session_state.aula_gerada)
+
+    st.markdown("---")
+    if st.button("Próxima Questão ➡️", type="primary", use_container_width=True):
+      st.session_state.questao_atual = None
+      st.session_state.status_resposta = None
+      st.session_state.escolha = None
+      st.session_state.aula_gerada = None
+      st.rerun()
+
+elif menu == "📊 Raio-X & Desempenho por Matéria":
+  st.title("📊 Raio-X Completo do Edital por Matéria")
+  df = carregar_dados()
+
+  tot_geral = len(df)
+  ac_geral = int(df["acertou"].sum()) if not df.empty and "acertou" in df.columns else 0
+  taxa_geral = (ac_geral / tot_geral * 100) if tot_geral > 0 else 0
+
+  c1, c2, c3 = st.columns(3)
+  c1.metric("Questões Respondidas", f"{tot_geral}")
+  c2.metric("Acertos Totais", f"{ac_geral}")
+  c3.metric("Aproveitamento Geral", f"{taxa_geral:.1f}%")
+
+  st.markdown("---")
+  st.subheader("🔍 Desempenho Detalhado por Concurso e Ementa Oficial")
+
+  tab1, tab2, tab3 = st.tabs([
+      "🏢 Dataprev (TI)",
+      "🛢️ Transpetro (SAP)",
+      "⚙️ Transpetro (Mecânico)",
+  ])
+
+  def renderizar_raio_x_completo(cargo_nome):
+    st.markdown(f
