@@ -1,6 +1,6 @@
+from datetime import datetime
 import json
 import os
-from datetime import datetime
 import pandas as pd
 import requests
 import streamlit as st
@@ -13,13 +13,14 @@ st.set_page_config(
     page_title="Tutor Concursos Pro", page_icon="🎯", layout="wide"
 )
 
-for k in [
+chaves_memoria = [
     "questao_atual",
     "status_resposta",
     "escolha",
     "aula_gerada",
     "cargo_memoria",
-]:
+]
+for k in chaves_memoria:
   if k not in st.session_state:
     st.session_state[k] = None
 
@@ -85,7 +86,7 @@ def registrar_resposta(q, resposta, acertou, cargo_sel):
 
 
 # ----------------------------------------------------
-# 3. BASE DE CARGOS & FALLBACK
+# 3. BASE DE CARGOS & QUESTÃO DE RESERVA
 # ----------------------------------------------------
 CARGOS_INFO = {
     "Dataprev - Analista de TI": {
@@ -124,7 +125,7 @@ QUESTAO_FALLBACK = {
     "assunto": "Integração MM e FI",
     "enunciado": (
         "No sistema SAP ECC (Enterprise Core Component), qual módulo principal"
-        " é responsável pela gestão de compras e suprimentos e se integra ao"
+        " é responsável pela gestão de compras e estoques e se integra ao"
         " módulo FI (Financial Accounting) no recebimento de faturas?"
     ),
     "opcoes": {
@@ -137,15 +138,72 @@ QUESTAO_FALLBACK = {
     "gabarito": "B",
     "explicacao_detalhada": (
         "**Alternativa B (Correta):** O módulo **SAP MM (Materials"
-        " Management)** administra compras e estoque, integrando-se com o"
-        " módulo **SAP FI (Financial Accounting)**."
+        " Management)** administra o fluxo de compras e estoque. Na entrada da"
+        " fatura, gera os lançamentos no módulo **SAP FI (Financial"
+        " Accounting)**.\n\n- **A (Incorreta):** **SAP SD (Sales and"
+        " Distribution)** cuida de vendas.\n- **C (Incorreta):** **SAP PM"
+        " (Plant Maintenance)** planeja manutenção.\n- **D (Incorreta):** **SAP"
+        " HR (Human Resources)** gerencia pessoas.\n- **E (Incorreta):** **SAP"
+        " QM (Quality Management)** gerencia qualidade."
     ),
 }
 
 
 # ----------------------------------------------------
-# 4. COMUNICAÇÃO TRANSPARENTE COM A GROQ
+# 4. AUTODESCOBERTA DINÂMICA DE MODELOS GROQ
 # ----------------------------------------------------
+@st.cache_data(ttl=1800)
+def obter_modelos_ativos_groq():
+  if not GROQ_KEY:
+    return ["llama-3.1-8b-instant"]
+
+  cabecalhos = {"Authorization": f"Bearer {GROQ_KEY}"}
+  try:
+    resp = requests.get(
+        "https://api.groq.com/openai/v1/models", headers=cabecalhos, timeout=10
+    )
+    if resp.status_code == 200:
+      dados = resp.json()
+      ids_disponiveis = [m["id"] for m in dados.get("data", [])]
+
+      # Filtra apenas modelos de texto suportados e remove descontinuados
+      modelos_chat = [
+          m
+          for m in ids_disponiveis
+          if not any(
+              sub in m
+              for sub in [
+                  "whisper",
+                  "guard",
+                  "embed",
+                  "vision",
+                  "safeguard",
+                  "gemma2",
+                  "llama3-",
+              ]
+          )
+      ]
+
+      preferencias = [
+          "llama-3.1-8b-instant",
+          "llama-3.3-70b-versatile",
+          "llama-3.2-3b-preview",
+          "llama-3.2-1b-preview",
+          "qwen-2.5-32b",
+      ]
+      ordenados = [p for p in preferencias if p in modelos_chat]
+      for m in modelos_chat:
+        if m not in ordenados:
+          ordenados.append(m)
+
+      if ordenados:
+        return ordenados
+  except Exception:
+    pass
+
+  return ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"]
+
+
 def chamar_groq(prompt_texto, quer_json=False):
   if not GROQ_KEY:
     st.error("🔑 Configure a chave GROQ_API_KEY no Secrets do Streamlit!")
@@ -155,18 +213,23 @@ def chamar_groq(prompt_texto, quer_json=False):
       "Authorization": f"Bearer {GROQ_KEY}",
       "Content-Type": "application/json",
   }
-  modelos = [
-      "llama-3.1-8b-instant",
-      "llama3-8b-8192",
-      "gemma2-9b-it",
-  ]
 
-  ultimo_detalhe = ""
+  modelos = obter_modelos_ativos_groq()
+  erros_log = []
 
   for m in modelos:
     corpo = {
         "model": m,
-        "messages": [{"role": "user", "content": prompt_texto}],
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "Você é um tutor especialista em concursos públicos"
+                    " brasileiros."
+                ),
+            },
+            {"role": "user", "content": prompt_texto},
+        ],
         "temperature": 0.2,
     }
     if quer_json:
@@ -180,13 +243,18 @@ def chamar_groq(prompt_texto, quer_json=False):
           timeout=20,
       )
       if res.status_code == 200:
-        return res.json()["choices"][0]["message"]["content"]
+        dados = res.json()
+        return dados["choices"][0]["message"]["content"]
       else:
-        ultimo_detalhe = f"{m} -> HTTP {res.status_code}: {res.text}"
+        erros_log.append(f"{m} (HTTP {res.status_code}): {res.text}")
     except Exception as e:
-      ultimo_detalhe = f"{m} -> Erro: {e}"
+      erros_log.append(f"{m} (Conexão): {e}")
 
-  st.error(f"❌ Resposta da API Groq: {ultimo_detalhe}")
+  if erros_log:
+    st.error(
+        "❌ Falha de comunicação com os modelos da Groq:\n\n"
+        + "\n\n".join(erros_log)
+    )
   return None
 
 
@@ -216,7 +284,7 @@ def limpar_json(texto):
 
 
 # ----------------------------------------------------
-# 5. GERADORES
+# 5. GERADORES DE QUESTÕES E AULAS
 # ----------------------------------------------------
 def gerar_questao(cargo_sel, pedido_extra=""):
   alvo = (
@@ -232,14 +300,14 @@ def gerar_questao(cargo_sel, pedido_extra=""):
       f" Públicos.\nConcurso: {info['concurso']}\nCargo: {alvo}\nBanca:"
       f" {info['banca']}\nEmenta: {info['materias']}\nPedido: {ped}\n\nREGRAS"
       " OBRIGATÓRIAS:\n1. Escreva todas as siglas por extenso entre"
-      " parênteses.\n2. Explique a alternativa certa e cada uma das"
-      ' incorretas.\n\nRetorne no formato JSON:\n{\n  "concurso":'
-      f' "{info["concurso"]}",\n  "cargo": "{alvo}",\n  "banca":'
+      " parênteses.\n2. Explique detalhadamente a alternativa correta e cada"
+      ' uma das incorretas.\n\nRetorne ESTRITAMENTE em formato JSON:\n{\n '
+      f' "concurso": "{info["concurso"]}",\n  "cargo": "{alvo}",\n  "banca":'
       f' "{info["banca"]}",\n  "materia": "Nome da Matéria",\n  "assunto":'
       ' "Tópico",\n  "enunciado": "Texto da questão",\n  "opcoes": {"A":'
       ' "Texto A", "B": "Texto B", "C": "Texto C", "D": "Texto D", "E": "Texto'
       ' E"},\n  "gabarito": "A",\n  "explicacao_detalhada": "Análise completa'
-      ' de todas as alternativas."\n}'
+      ' com siglas por extenso entre parênteses."\n}'
   )
 
   res = chamar_groq(prompt, quer_json=True)
@@ -258,8 +326,8 @@ def gerar_aula(q):
   prompt = (
       f"Professor de concurso preparando aluno para {c_nome} na banca"
       f" {b_nome}.\nO aluno marcou 'Não Sei' no assunto: {m_nome} - {a_nome}\n"
-      f"Enunciado: {e_nome}\nAlternativas: {ops}\nGabarito: {g_nome}\n\n"
-      "Escreva todas as siglas por extenso entre parênteses.\n"
+      f"Enunciado: {e_nome}\nAlternativas: {ops}\nGabarito Oficial:"
+      f" {g_nome}\n\nEscreva todas as siglas por extenso entre parênteses.\n"
       "Crie uma aula completa em Markdown estruturada com:\n"
       "## 🏛️ 1. Fundamentação Teórica Completa\n"
       "## 🔍 2. Análise Detalhada de Cada Alternativa\n"
@@ -272,7 +340,7 @@ def gerar_aula(q):
 
 
 # ----------------------------------------------------
-# 6. INTERFACE
+# 6. INTERFACE STREAMLIT
 # ----------------------------------------------------
 st.sidebar.title("📚 Menu de Estudos")
 menu = st.sidebar.radio(
