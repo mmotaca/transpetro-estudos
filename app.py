@@ -1,7 +1,7 @@
 import streamlit as st
 import sqlite3
 import json
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from google import genai
 from google.genai import types
 
@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS questoes (
 conn.commit()
 
 # ----------------------------------------------------
-# 3. FUNÇÃO PARA GERAR NOVA QUESTÃO
+# 3. GERADOR DE QUESTÕES COM APROFUNDAMENTO DIDÁTICO
 # ----------------------------------------------------
 def gerar_questao():
     cursor.execute("""
@@ -45,31 +45,29 @@ def gerar_questao():
         LIMIT 1
     """)
     pior_desempenho = cursor.fetchone()
-    
     contexto_fraqueza = f"Foco prioritário na fraqueza do aluno: {pior_desempenho[0]}" if pior_desempenho else "Início do ciclo adaptativo"
 
     prompt_instrucao = f"""
     Atue como Diretor Virtual de Estudos Especialista em Concursos Públicos.
     Concursos-alvo:
-    1. Dataprev (Analista de Informação) - Banca FGV
-    2. Transpetro (Analista SAP / Mecânico de Manutenção) - Banca Cesgranrio
-    3. Base Geral: Português e Raciocínio Lógico-Matemático.
+    1. Dataprev (FGV) - Informática, Governança, Lógica, Português.
+    2. Transpetro (Cesgranrio) - Conhecimentos Específicos e Gerais.
     
-    Perfil do Aluno: TDAH (frases concisas, direct, foco em palavras-chave em negrito).
-    Status do Aluno: {contexto_fraqueza}.
+    Perfil do Aluno: Foco em clareza, termos-chave em negrito, alta retenção.
+    Status atual: {contexto_fraqueza}.
 
-    Gere UMA questão inédita com alto rigor técnico da banca correspondente.
+    Gere UMA questão inédita no estilo autêntico da banca correspondente.
     Retorne ESTRITAMENTE em formato JSON com o seguinte schema:
     {{
         "concurso": "Dataprev ou Transpetro",
         "banca": "FGV ou Cesgranrio",
         "materia": "Nome da Matéria",
         "assunto": "Tópico Específico",
-        "enunciado": "Texto da questão claro e objetivo",
+        "enunciado": "Texto claro e bem estruturado da questão",
         "opcoes": {{"A": "...", "B": "...", "C": "...", "D": "...", "E": "..."}},
         "gabarito": "A, B, C, D ou E",
-        "explicacao_rapida": "Explicação direta em tópicos destacando a lógica da banca.",
-        "explicacao_didatica": "Aula completa e passo a passo explicando o conceito teórico para quem não sabe o assunto."
+        "explicacao_rapida": "Resumo objetivo do porquê o gabarito está certo.",
+        "aula_profunda": "AULA COMPLETA: 1) O Conceito Teórico detalhado do tema; 2) Regra prática para memorizar; 3) A pegadinha clássica que as bancas armam nesse tipo de questão."
     }}
     """
     
@@ -83,27 +81,27 @@ def gerar_questao():
     return json.loads(response.text)
 
 # ----------------------------------------------------
-# 4. INTERFACE E ABAS (STREAMLIT)
+# 4. ESTRUTURA DO APP & MENU LATERAL
 # ----------------------------------------------------
-st.set_page_config(page_title="Tutor Adaptativo", page_icon="🎯", layout="wide")
+st.set_page_config(page_title="Tutor Concursos Pro", page_icon="🎯", layout="wide")
 
-aba_estudo, aba_stats = st.tabs(["📝 Treino & Questões", "📊 Painel de Estatísticas Detalhadas"])
+st.sidebar.title("📚 Menu de Navegação")
+menu = st.sidebar.radio("Ir para:", ["📝 Treino de Questões", "📊 Dashboard Completo"])
 
-# ==========================================
-# ABA 1: ÁREA DE ESTUDOS
-# ==========================================
-with aba_estudo:
+# ====================================================
+# TELA 1: TREINO ADAPTATIVO
+# ====================================================
+if menu == "📝 Treino de Questões":
     st.title("🎯 Treino de Questões Adaptativo")
     
     if "questao_atual" not in st.session_state:
-        with st.spinner("Gerando questão sob medida..."):
+        with st.spinner("Gerando questão inédita sob medida..."):
             st.session_state.questao_atual = gerar_questao()
-            st.session_state.status_resposta = None  # 'acertou', 'errou', 'nao_sei'
+            st.session_state.status_resposta = None
             st.session_state.escolha = None
 
     q = st.session_state.questao_atual
 
-    # Card informativo
     st.info(f"**Banca:** {q['banca']} | **Concurso:** {q['concurso']} | **Matéria:** {q['materia']} — *{q.get('assunto', '')}*")
     st.markdown(f"### {q['enunciado']}")
 
@@ -120,7 +118,6 @@ with aba_estudo:
 
     col1, col2 = st.columns([1, 1])
 
-    # Botões de Ação
     if not disabled:
         with col1:
             if st.button("✅ Confirmar Resposta", type="primary", use_container_width=True):
@@ -136,7 +133,7 @@ with aba_estudo:
                 st.rerun()
 
         with col2:
-            if st.button("🤷 Não sei o assunto (Aprender teoria)", type="secondary", use_container_width=True):
+            if st.button("🤷 Não sei o assunto (Abrir Aula Completa)", type="secondary", use_container_width=True):
                 st.session_state.escolha = "NÃO SEI"
                 st.session_state.status_resposta = "nao_sei"
                 
@@ -147,7 +144,6 @@ with aba_estudo:
                 conn.commit()
                 st.rerun()
 
-    # Exibição do Feedback e Explicações
     if disabled:
         st.markdown("---")
         if st.session_state.status_resposta == "acertou":
@@ -157,45 +153,83 @@ with aba_estudo:
             st.error(f"❌ **ERROU!** Você marcou **{st.session_state.escolha}**, mas o gabarito oficial é **{q['gabarito']}**.")
             st.write(q["explicacao_rapida"])
         elif st.session_state.status_resposta == "nao_sei":
-            st.warning(f"💡 **Modo Aula Ativado!** O gabarito correto desta questão é **{q['gabarito']}**.")
-            st.markdown("### 📖 Entenda o conceito passo a passo:")
-            st.write(q.get("explicacao_didatica", q["explicacao_rapida"]))
+            st.warning(f"💡 **Modo Aula Teórica Ativado!** Gabarito correto: **{q['gabarito']}**.")
+            st.markdown("### 📖 Mini-Aula Completa sobre o Tema:")
+            st.write(q.get("aula_profunda", q["explicacao_rapida"]))
 
         st.markdown("---")
         if st.button("Próxima Questão ➡️", type="primary", use_container_width=True):
-            with st.spinner("Buscando próxima questão adaptada ao seu desempenho..."):
+            with st.spinner("Buscando próxima questão..."):
                 st.session_state.questao_atual = gerar_questao()
                 st.session_state.status_resposta = None
                 st.session_state.escolha = None
                 st.rerun()
 
-# ==========================================
-# ABA 2: ESTATÍSTICAS DETALHADAS
-# ==========================================
-with aba_stats:
-    st.title("📊 Painel de Desempenho & Diagnóstico")
+# ====================================================
+# TELA 2: DASHBOARD COMPLETO & ESTIMATIVA DE CAPACITAÇÃO
+# ====================================================
+elif menu == "📊 Dashboard Completo":
+    st.title("📊 Painel de Desempenho & Estimativa de Capacitação")
     
-    hoje_str = date.today().strftime("%Y-%m-%d")
-    
-    # Métricas gerais
-    total_geral = cursor.execute("SELECT COUNT(*) FROM questoes").fetchone()[0]
-    total_hoje = cursor.execute("SELECT COUNT(*) FROM questoes WHERE data LIKE ?", (f"{hoje_str}%",)).fetchone()[0]
-    acertos_geral = cursor.execute("SELECT COUNT(*) FROM questoes WHERE acertou = 1").fetchone()[0]
-    acertos_hoje = cursor.execute("SELECT COUNT(*) FROM questoes WHERE acertou = 1 AND data LIKE ?", (f"{hoje_str}%",)).fetchone()[0]
-    nao_sei_count = cursor.execute("SELECT COUNT(*) FROM questoes WHERE resposta_usuario = 'NÃO SEI'").fetchone()[0]
+    hoje = date.today()
+    hoje_str = hoje.strftime("%Y-%m-%d")
+    inicio_semana = (hoje - timedelta(days=7)).strftime("%Y-%m-%d")
+    inicio_mes = (hoje - timedelta(days=30)).strftime("%Y-%m-%d")
 
-    taxa_acerto_geral = (acertos_geral / total_geral * 100) if total_geral > 0 else 0
-    taxa_acerto_hoje = (acertos_hoje / total_hoje * 100) if total_hoje > 0 else 0
+    # Consultas temporais
+    total_hoje = cursor.execute("SELECT COUNT(*) FROM questoes WHERE data >= ?", (hoje_str,)).fetchone()[0]
+    acertos_hoje = cursor.execute("SELECT COUNT(*) FROM questoes WHERE data >= ? AND acertou = 1", (hoje_str,)).fetchone()[0]
 
+    total_semana = cursor.execute("SELECT COUNT(*) FROM questoes WHERE data >= ?", (inicio_semana,)).fetchone()[0]
+    acertos_semana = cursor.execute("SELECT COUNT(*) FROM questoes WHERE data >= ? AND acertou = 1", (inicio_semana,)).fetchone()[0]
+
+    total_mes = cursor.execute("SELECT COUNT(*) FROM questoes WHERE data >= ?", (inicio_mes,)).fetchone()[0]
+    acertos_mes = cursor.execute("SELECT COUNT(*) FROM questoes WHERE data >= ? AND acertou = 1", (inicio_mes,)).fetchone()[0]
+
+    total_acumulado = cursor.execute("SELECT COUNT(*) FROM questoes").fetchone()[0]
+    acertos_acumulado = cursor.execute("SELECT COUNT(*) FROM questoes WHERE acertou = 1").fetchone()[0]
+
+    # Taxas
+    taxa_hoje = (acertos_hoje / total_hoje * 100) if total_hoje > 0 else 0
+    taxa_semana = (acertos_semana / total_semana * 100) if total_semana > 0 else 0
+    taxa_mes = (acertos_mes / total_mes * 100) if total_mes > 0 else 0
+    taxa_geral = (acertos_acumulado / total_acumulado * 100) if total_acumulado > 0 else 0
+
+    # 1. Cards de Volume Temporal
+    st.subheader("📅 Volume de Treino por Período")
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Questões Hoje", total_hoje, f"{taxa_acerto_hoje:.1f}% acerto")
-    c2.metric("Total Acumulado", total_geral, f"{taxa_acerto_geral:.1f}% acerto")
-    c3.metric("Total de Acertos", acertos_geral)
-    c4.metric("Aulas Solicitadas ('Não Sei')", nao_sei_count)
+    c1.metric("Hoje", f"{total_hoje} q.", f"{taxa_hoje:.1f}% acerto")
+    c2.metric("Últimos 7 Dias", f"{total_semana} q.", f"{taxa_semana:.1f}% acerto")
+    c3.metric("Últimos 30 Dias", f"{total_mes} q.", f"{taxa_mes:.1f}% acerto")
+    c4.metric("Total Acumulado", f"{total_acumulado} q.", f"{taxa_geral:.1f}% acerto")
 
     st.markdown("---")
-    st.subheader("📈 Rendimento por Matéria")
+
+    # 2. Estimativa de Capacitação para a Prova
+    st.subheader("🎯 Termômetro de Prontidão para Aprovação")
     
+    META_COMPETITIVA = 500  # Base média recomendada para consolidação de bancas
+    progresso = min(total_acumulado / META_COMPETITIVA, 1.0)
+    restantes = max(META_COMPETITIVA - total_acumulado, 0)
+    
+    st.write(f"**Progresso até a base competitiva recomendada ({META_COMPETITIVA} questões resolvidas):**")
+    st.progress(progresso)
+    
+    col_cap1, col_cap2 = st.columns(2)
+    with col_cap1:
+        st.info(f"📌 **Faltam {restantes} questões** para atingir o volume ótimo de maturidade nas bancas FGV/Cesgranrio.")
+    with col_cap2:
+        if taxa_geral >= 80 and total_acumulado >= 300:
+            st.success("🟢 **Status:** Nível Competitivo de Alta Performance!")
+        elif taxa_geral >= 65:
+            st.warning("🟡 **Status:** Nível Intermediário — Mantenha o ritmo diário.")
+        else:
+            st.error("🔴 **Status:** Fase de Construção de Base — Priorize revisar os temas com botão 'Não sei'.")
+
+    st.markdown("---")
+
+    # 3. Tabela Detalhada por Matéria
+    st.subheader("📊 Rendimento e Diagnóstico por Matéria")
     stats_materia = cursor.execute("""
         SELECT 
             materia, 
@@ -208,19 +242,19 @@ with aba_stats:
     """).fetchall()
 
     if stats_materia:
-        dados_tabela = []
+        tabela = []
         for mat, tot, ac, duv in stats_materia:
             acertos = ac or 0
             taxa = (acertos / tot) * 100
             status = "🔴 Prioridade Alta (Fraco)" if taxa < 60 else ("🟡 Atenção" if taxa < 80 else "🟢 Dominado")
-            dados_tabela.append({
+            tabela.append({
                 "Matéria": mat,
-                "Total": tot,
+                "Total de Questões": tot,
                 "Acertos": acertos,
-                "Dúvidas / Pulos": duv,
-                "Taxa de Acerto": f"{taxa:.1f}%",
+                "Aulas Solicitadas": duv,
+                "Aproveitamento": f"{taxa:.1f}%",
                 "Diagnóstico": status
             })
-        st.table(dados_tabela)
+        st.table(tabela)
     else:
-        st.info("Resolva algumas questões para liberar os gráficos e o diagnóstico de fraquezas.")
+        st.info("Resolva suas primeiras questões para liberar o mapa detalhado por matéria.")
