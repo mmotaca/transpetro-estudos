@@ -19,10 +19,10 @@ raw_supa_key = st.secrets.get("SUPABASE_KEY", os.environ.get("SUPABASE_KEY", "")
 SUPABASE_KEY = raw_supa_key.strip().strip('"').strip("'") if raw_supa_key else ""
 
 if not GEMINI_API_KEY:
-    st.error("🔑 **Chave GEMINI_API_KEY não configurada!** Acesse Settings > Secrets no Streamlit Cloud.")
+    st.error("🔑 Chave GEMINI_API_KEY não configurada no Secrets do Streamlit!")
     st.stop()
 
-# Configura a API com a chave informada
+# Configuração do cliente Gemini
 genai.configure(api_key=GEMINI_API_KEY)
 
 # Inicialização do Supabase
@@ -38,7 +38,7 @@ def get_supabase():
 supabase = get_supabase()
 
 # ----------------------------------------------------
-# 2. BANCO DE DADOS SUPABASE
+# 2. OPERAÇÕES NO BANCO DE DADOS
 # ----------------------------------------------------
 def carregar_dados():
     if not supabase:
@@ -57,10 +57,10 @@ def salvar_resposta_supabase(nova_linha):
     try:
         supabase.table("questoes").insert(nova_linha).execute()
     except Exception as e:
-        st.warning(f"Não foi possível gravar no banco em nuvem: {e}")
+        st.warning(f"Não foi possível salvar no banco: {e}")
 
 # ----------------------------------------------------
-# 3. MAPEAMENTO DOS 3 CARGOS
+# 3. MAPEAMENTO DOS 3 CONCURSOS E CARGOS
 # ----------------------------------------------------
 CARGOS_INFO = {
     "Dataprev - Analista de TI": {
@@ -81,7 +81,7 @@ CARGOS_INFO = {
 }
 
 # ----------------------------------------------------
-# 4. LIMPEZA E PARSER DE JSON ROBUSTO
+# 4. PARSER E LIMPEZA DE JSON
 # ----------------------------------------------------
 def extrair_json_puro(texto):
     texto_limpo = texto.strip()
@@ -100,7 +100,7 @@ def extrair_json_puro(texto):
         fim = texto_limpo.rfind("}") + 1
         if inicio != -1 and fim > inicio:
             return json.loads(texto_limpo[inicio:fim])
-        raise ValueError("Formato JSON retornado pela IA foi inválido.")
+        raise ValueError("JSON retornado inválido.")
 
 # ----------------------------------------------------
 # 5. GERADOR DE QUESTÕES
@@ -116,7 +116,7 @@ def gerar_questao(cargo_selecionado, pedido_personalizado=""):
                 agrupado = df_validas.groupby(["cargo", "materia"])["acertou"].mean().reset_index()
                 pior = agrupado.sort_values(by="acertou").iloc[0]
                 cargo_alvo = pior["cargo"] if pior["cargo"] in CARGOS_INFO else "Dataprev - Analista de TI"
-                contexto_fraqueza = f"Foco de erro no cargo {cargo_alvo} na matéria {pior['materia']}"
+                contexto_fraqueza = f"Foco no cargo {cargo_alvo}, matéria {pior['materia']}"
             else:
                 cargo_alvo = "Dataprev - Analista de TI"
         else:
@@ -128,79 +128,66 @@ def gerar_questao(cargo_selecionado, pedido_personalizado=""):
             if not df_cargo.empty:
                 agrupado = df_cargo.groupby("materia")["acertou"].mean().reset_index()
                 pior = agrupado.sort_values(by="acertou").iloc[0]
-                contexto_fraqueza = f"Foco de erro no cargo {cargo_alvo}: matéria {pior['materia']}"
+                contexto_fraqueza = f"Foco no cargo {cargo_alvo}: matéria {pior['materia']}"
 
     info = CARGOS_INFO[cargo_alvo]
 
     instrucao_extra = ""
-    if pedido_personalizado and pedido_personalizado.strip() != "":
-        instrucao_extra = f"\n⚠️ PEDIDO PRIORITÁRIO DO ALUNO: '{pedido_personalizado.strip()}'. Cumpra estritamente essa solicitação."
+    if pedido_personalizado and pedido_personalizado.strip():
+        instrucao_extra = f"\n⚠️ PEDIDO DO ALUNO: '{pedido_personalizado.strip()}'. Cumpra essa prioridade."
 
-    prompt_instrucao = f"""
-    Atue como Diretor Virtual de Estudos Especialista em Concursos Públicos.
-    Concurso: {info['concurso']}
-    Cargo: {cargo_alvo}
-    Banca Examinadora: {info['banca']}
-    Ementa do Cargo: {info['materias']}
-    Status do Aluno: {contexto_fraqueza}
-    {instrucao_extra}
-
-    DIRETRIZES OBRIGATÓRIAS:
-    1. SIGLAS: SEMPRE que usar qualquer sigla técnica, escreva o significado COMPLETO entre parênteses logo ao lado.
-    2. COMENTÁRIO DO GABARITO (campo 'explicacao_detalhada'): Explique detalhadamente por que a alternativa correta está certa e analise cada uma das alternativas incorretas individualmente, mostrando o erro específico de cada uma.
-
-    Gere UMA questão inédita no estilo autêntico da banca correspondente.
-    Retorne ESTRITAMENTE em formato JSON com o seguinte schema:
-    {{
-        "concurso": "{info['concurso']}",
-        "cargo": "{cargo_alvo}",
-        "banca": "{info['banca']}",
-        "materia": "Nome da Matéria",
-        "assunto": "Tópico Específico",
-        "enunciado": "Texto claro e direto da questão",
-        "opcoes": {{"A": "...", "B": "...", "C": "...", "D": "...", "E": "..."}},
-        "gabarito": "A, B, C, D ou E",
-        "explicacao_detalhada": "Texto em Markdown analisando a correta e todas as incorretas (A, B, C, D, E) com siglas por extenso entre parênteses."
-    }}
-    """
+    prompt_instrucao = (
+        "Atue como Diretor Virtual de Estudos Especialista em Concursos Públicos.\n"
+        f"Concurso: {info['concurso']}\n"
+        f"Cargo: {cargo_alvo}\n"
+        f"Banca: {info['banca']}\n"
+        f"Ementa: {info['materias']}\n"
+        f"Status: {contexto_fraqueza}\n"
+        f"{instrucao_extra}\n\n"
+        "DIRETRIZES OBRIGATÓRIAS:\n"
+        "1. SIGLAS: SEMPRE que citar qualquer sigla técnica, escreva o significado COMPLETO entre parênteses logo ao lado.\n"
+        "2. COMENTÁRIO DO GABARITO (campo 'explicacao_detalhada'): Explique detalhadamente por que a correta está certa e analise cada uma das alternativas incorretas individualmente, mostrando o erro específico de cada uma.\n\n"
+        "Gere UMA questão inédita no formato JSON:\n"
+        "{\n"
+        f'  "concurso": "{info["concurso"]}",\n'
+        f'  "cargo": "{cargo_alvo}",\n'
+        f'  "banca": "{info["banca"]}",\n'
+        '  "materia": "Nome da Matéria",\n'
+        '  "assunto": "Tópico Específico",\n'
+        '  "enunciado": "Texto claro da questão",\n'
+        '  "opcoes": {"A": "Opção A", "B": "Opção B", "C": "Opção C", "D": "Opção D", "E": "Opção E"},\n'
+        '  "gabarito": "A, B, C, D ou E",\n'
+        '  "explicacao_detalhada": "Análise da alternativa correta e de cada uma das incorretas com siglas por extenso entre parênteses."\n'
+        "}"
+    )
     
     try:
         model = genai.GenerativeModel("gemini-1.5-flash", generation_config={"response_mime_type": "application/json"})
         response = model.generate_content(prompt_instrucao)
         return extrair_json_puro(response.text)
     except Exception as e:
-        st.error(f"❌ Erro ao conectar com o Gemini: {e}")
+        st.error(f"Erro na geração da questão: {e}")
         st.stop()
 
 # ----------------------------------------------------
-# 6. GERADOR DE AULA PROFUNDA (MODO "NÃO SEI")
+# 6. GERADOR DE AULA COMPLETA
 # ----------------------------------------------------
 def gerar_aula_profunda(q):
-    prompt_aula = f"""
-    Você é um professor titular renomado preparando um candidato para a banca {q['banca']} no cargo {q.get('cargo', q['concurso'])}.
-    O aluno marcou 'Não Sei' no assunto:
-    - Matéria: {q['materia']}
-    - Assunto: {q.get('assunto', '')}
-    - Enunciado: {q['enunciado']}
-    - Alternativas: {json.dumps(q['opcoes'], ensure_ascii=False)}
-    - Gabarito Oficial: {q['gabarito']}
-
-    REGRA OBRIGATÓRIA: SEMPRE que usar qualquer sigla técnica, escreva o significado COMPLETO entre parênteses.
-
-    Escreva uma AULA TEÓRICA E PRÁTICA COMPLETA em Markdown com as seguintes seções:
-    
-    ## 🏛️ 1. Fundamentação Teórica Completa
-    Explique o conceito fundamental do zero com profundidade, normas e aplicação prática do cargo.
-
-    ## 🔍 2. Análise Detalhada de Cada Alternativa
-    Explique por que a alternativa {q['gabarito']} é a correta e analise todas as outras alternativas, apontando o erro de cada uma.
-
-    ## ⚡ 3. O Padrão da Banca ({q['banca']}) & Pegadinhas
-    Como essa banca cobra o tema e a armadilha típica.
-
-    ## 🧠 4. Resumo Prático & Mnemônico / Regra de Ouro
-    Esquema resumido para acertar rápido na hora da prova.
-    """
+    prompt_aula = (
+        f"Você é um professor renomado preparando um candidato para a banca {q['banca']} no cargo {q.get('cargo', q['concurso'])}.\n"
+        f"O aluno solicitou a aula completa no assunto:\n"
+        f"- Matéria: {q['materia']}\n"
+        f"- Assunto: {q.get('assunto', '')}\n"
+        f"- Enunciado: {q['enunciado']}\n"
+        f"- Alternativas: {json.dumps(q['opcoes'], ensure_ascii=False)}\n"
+        f"- Gabarito: {q['gabarito']}\n\n"
+        "REGRA: SEMPRE que usar qualquer sigla técnica, escreva o significado COMPLETO entre parênteses.\n\n"
+        "Escreva uma AULA COMPLETA em Markdown com:\n"
+        "## 🏛️ 1. Fundamentação Teórica Completa\n"
+        "## 🔍 2. Análise Detalhada de Cada Alternativa\n"
+        f"## ⚡ 3. O Padrão da Banca ({q['banca']}) & Pegadinhas\n"
+        "## 🧠 4. Resumo Prático & Mnemônico / Regra de Ouro\n"
+    )
 
     try:
         model = genai.GenerativeModel("gemini-1.5-flash")
@@ -210,7 +197,7 @@ def gerar_aula_profunda(q):
         return f"Não foi possível carregar a aula detalhada: {e}"
 
 # ----------------------------------------------------
-# 7. ESTRUTURA DO APP & NAVEGAÇÃO
+# 7. ESTRUTURA PRINCIPAL & NAVEGAÇÃO
 # ----------------------------------------------------
 st.set_page_config(page_title="Tutor Concursos Pro", page_icon="🎯", layout="wide")
 
@@ -221,87 +208,4 @@ st.sidebar.markdown("---")
 st.sidebar.subheader("🎯 Foco de Estudo Atual:")
 cargo_selecionado = st.sidebar.selectbox(
     "Escolha o Cargo:",
-    ["Ciclo Automático (Todos os Cargos)"] + list(CARGOS_INFO.keys())
-)
-
-st.sidebar.markdown("---")
-st.sidebar.subheader("💬 Pedido Especial para a IA")
-pedido_usuario = st.sidebar.text_area(
-    "Instrução personalizada (opcional):",
-    placeholder="Ex: Questão difícil de COBIT 2019 / Bombas centrífugas / Crase FGV",
-    help="Se preenchido, a IA priorizará sua instrução."
-)
-
-if st.sidebar.button("🔄 Aplicar Pedido / Nova Questão", use_container_width=True):
-    st.session_state.questao_atual = None
-    st.session_state.status_resposta = None
-    st.session_state.escolha = None
-    st.session_state.aula_gerada = None
-    st.rerun()
-
-# ====================================================
-# TELA 1: ÁREA DE QUESTÕES
-# ====================================================
-if menu == "📝 Treino de Questões":
-    st.title("🎯 Treino de Questões Adaptativo")
-    
-    if "cargo_atual_memoria" not in st.session_state or st.session_state.cargo_atual_memoria != cargo_selecionado:
-        st.session_state.cargo_atual_memoria = cargo_selecionado
-        st.session_state.questao_atual = None
-
-    if st.session_state.get("questao_atual") is None:
-        with st.spinner(f"Gerando questão inédita para: {cargo_selecionado}..."):
-            st.session_state.questao_atual = gerar_questao(cargo_selecionado, pedido_usuario)
-            st.session_state.status_resposta = None
-            st.session_state.escolha = None
-            st.session_state.aula_gerada = None
-
-    q = st.session_state.questao_atual
-
-    st.info(f"📌 **Cargo:** {q.get('cargo', q['concurso'])} | **Banca:** {q['banca']} | **Matéria:** {q['materia']} — *{q.get('assunto', '')}*")
-    st.markdown(f"### {q['enunciado']}")
-
-    opcoes = q["opcoes"]
-    disabled = st.session_state.status_resposta is not None
-
-    escolha = st.radio(
-        "Selecione sua alternativa:", 
-        list(opcoes.keys()), 
-        format_func=lambda x: f"{x}) {opcoes[x]}",
-        disabled=disabled,
-        key="radio_opcao"
-    )
-
-    col1, col2 = st.columns([1, 1])
-
-    if not disabled:
-        with col1:
-            if st.button("✅ Confirmar Resposta", type="primary", use_container_width=True):
-                st.session_state.escolha = escolha
-                acertou = 1 if escolha == q["gabarito"] else 0
-                st.session_state.status_resposta = "acertou" if acertou == 1 else "errou"
-                
-                salvar_resposta_supabase({
-                    "data": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "concurso": q["concurso"],
-                    "cargo": q.get("cargo", cargo_selecionado),
-                    "banca": q["banca"],
-                    "materia": q["materia"],
-                    "enunciado": q["enunciado"],
-                    "gabarito": q["gabarito"],
-                    "resposta_usuario": escolha,
-                    "acertou": acertou
-                })
-                st.rerun()
-
-        with col2:
-            if st.button("🤷 Não sei o assunto (Abrir Aula Completa)", type="secondary", use_container_width=True):
-                st.session_state.escolha = "NÃO SEI"
-                st.session_state.status_resposta = "nao_sei"
-                
-                salvar_resposta_supabase({
-                    "data": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "concurso": q["concurso"],
-                    "cargo": q.get("cargo", cargo_selecionado),
-                    "banca": q["banca"],
-                    "materia": q["materia"],
+    ["Ciclo Automático (Todos os Cargos)"] + list(CARGOS_
