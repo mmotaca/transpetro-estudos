@@ -15,6 +15,7 @@ SUPABASE_URL = st.secrets.get("SUPABASE_URL", os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", os.environ.get("SUPABASE_KEY", ""))
 
 client = genai.Client(api_key=GEMINI_API_KEY)
+MODELO_GEMINI = "gemini-2.5-flash"
 
 @st.cache_resource
 def get_supabase() -> Client:
@@ -62,7 +63,7 @@ CARGOS_INFO = {
 }
 
 # ----------------------------------------------------
-# 4. GERADOR DE QUESTÕES (COM ANÁLISE COMPLETA E SIGLAS EXPANDIDAS)
+# 4. GERADOR DE QUESTÕES
 # ----------------------------------------------------
 def gerar_questao(cargo_selecionado, pedido_personalizado=""):
     df = carregar_dados()
@@ -104,9 +105,9 @@ def gerar_questao(cargo_selecionado, pedido_personalizado=""):
     Status do Aluno: {contexto_fraqueza}
     {instrucao_extra}
 
-    DIRETRIZES OBRIGATÓRIAS DE DIDÁTICA:
+    DIRETRIZES OBRIGATÓRIAS:
     1. SIGLAS: SEMPRE que citar qualquer sigla (ex: SGBD, ITIL, COBIT, ERP, ABAP, END, DDL, DML, ACID), escreva o significado COMPLETO entre parênteses logo em seguida.
-    2. COMENTÁRIO DO GABARITO (campo 'explicacao_detalhada'): Explique com clareza O PORQUÊ da alternativa correta estar certa E DESTRINCHE UMA POR UMA TODAS AS OUTRAS ALTERNATIVAS, mostrando exatamente qual o erro de cada uma.
+    2. COMENTÁRIO DO GABARITO (campo 'explicacao_detalhada'): Explique detalhadamente O MOTIVO do gabarito correto e ANALISE TODAS AS OUTRAS ALTERNATIVAS uma a uma, pontuando o erro de cada uma.
 
     Gere UMA questão inédita no estilo autêntico da banca examinadora.
     Retorne ESTRITAMENTE em formato JSON com o seguinte schema:
@@ -119,12 +120,12 @@ def gerar_questao(cargo_selecionado, pedido_personalizado=""):
         "enunciado": "Texto claro e direto da questão",
         "opcoes": {{"A": "...", "B": "...", "C": "...", "D": "...", "E": "..."}},
         "gabarito": "A, B, C, D ou E",
-        "explicacao_detalhada": "Texto em Markdown analisando primeiro a correta e depois cada uma das alternativas incorretas (A, B, C, D, E) individualmente, com siglas por extenso entre parênteses."
+        "explicacao_detalhada": "Texto em Markdown analisando primeiro a alternativa correta e depois cada uma das alternativas incorretas (A, B, C, D, E) individualmente, com siglas por extenso entre parênteses."
     }}
     """
     
     response = client.models.generate_content(
-        model="gemini-3.6-flash",
+        model=MODELO_GEMINI,
         contents=prompt_instrucao,
         config=types.GenerateContentConfig(
             response_mime_type="application/json"
@@ -159,11 +160,11 @@ def gerar_aula_profunda(q):
     Como essa banca aborda o tema e qual armadilha clássica costuma derrubar candidatos.
 
     ## 🧠 4. Resumo Prático & Regra de Ouro / Mnemônico
-    Esquema resumido em tópicos ou mnemônico para bater o olho na prova e acertar rápido.
+    Esquema resumido em tópicos ou mnemônico para memorizar e acertar rápido na prova.
     """
 
     response = client.models.generate_content(
-        model="gemini-3.6-flash",
+        model=MODELO_GEMINI,
         contents=prompt_aula
     )
     return response.text
