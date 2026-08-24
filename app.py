@@ -14,8 +14,12 @@ GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY
 SUPABASE_URL = st.secrets.get("SUPABASE_URL", os.environ.get("SUPABASE_URL", ""))
 SUPABASE_KEY = st.secrets.get("SUPABASE_KEY", os.environ.get("SUPABASE_KEY", ""))
 
+if not GEMINI_API_KEY:
+    st.error("⚠️ Atenção: A chave GEMINI_API_KEY não foi encontrada no Secrets do Streamlit!")
+    st.stop()
+
 client = genai.Client(api_key=GEMINI_API_KEY)
-MODELO_GEMINI = "gemini-2.5-flash"
+MODELO_GEMINI = "gemini-2.0-flash"
 
 @st.cache_resource
 def get_supabase() -> Client:
@@ -124,14 +128,25 @@ def gerar_questao(cargo_selecionado, pedido_personalizado=""):
     }}
     """
     
-    response = client.models.generate_content(
-        model=MODELO_GEMINI,
-        contents=prompt_instrucao,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json"
+    try:
+        response = client.models.generate_content(
+            model=MODELO_GEMINI,
+            contents=prompt_instrucao,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json"
+            )
         )
-    )
-    return json.loads(response.text)
+        return json.loads(response.text)
+    except Exception as e:
+        # Fallback de segurança para o modelo 1.5-flash se necessário
+        response = client.models.generate_content(
+            model="gemini-1.5-flash",
+            contents=prompt_instrucao,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json"
+            )
+        )
+        return json.loads(response.text)
 
 # ----------------------------------------------------
 # 5. GERADOR DE AULA COMPLETA (MODO "NÃO SEI")
@@ -163,11 +178,18 @@ def gerar_aula_profunda(q):
     Esquema resumido em tópicos ou mnemônico para memorizar e acertar rápido na prova.
     """
 
-    response = client.models.generate_content(
-        model=MODELO_GEMINI,
-        contents=prompt_aula
-    )
-    return response.text
+    try:
+        response = client.models.generate_content(
+            model=MODELO_GEMINI,
+            contents=prompt_aula
+        )
+        return response.text
+    except Exception:
+        response = client.models.generate_content(
+            model="gemini-1.5-flash",
+            contents=prompt_aula
+        )
+        return response.text
 
 # ----------------------------------------------------
 # 6. ESTRUTURA DO APP & NAVEGAÇÃO
