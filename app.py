@@ -1,14 +1,20 @@
 import streamlit as st
 import sqlite3
 import json
+import os
 from datetime import datetime, date, timedelta
 from google import genai
 from google.genai import types
 
 # ----------------------------------------------------
-# 1. CONFIGURAÇÃO DA API GEMINI
+# 1. CONFIGURAÇÃO SEGURA DA API GEMINI
 # ----------------------------------------------------
-GEMINI_API_KEY = "AQ.Ab8RN6Kw-oIgFWAmc6mDWOjMNpvC3DG_LGhoBpqtkBfeIUcsHA" 
+# Busca a chave nos Secrets do Streamlit Cloud ou variável de ambiente
+if "GEMINI_API_KEY" in st.secrets:
+    GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
+else:
+    GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 # ----------------------------------------------------
@@ -159,7 +165,7 @@ if menu == "📝 Treino de Questões":
 
         st.markdown("---")
         if st.button("Próxima Questão ➡️", type="primary", use_container_width=True):
-            with st.spinner("Buscando próxima questão..."):
+            with st.spinner("Buscando próxima questão adaptada ao seu desempenho..."):
                 st.session_state.questao_atual = gerar_questao()
                 st.session_state.status_resposta = None
                 st.session_state.escolha = None
